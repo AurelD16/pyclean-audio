@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pyclean-audio — Amélioration audio</title>
+<title>pyclean-audio — Audio enhancement</title>
 <style>
   :root {
     --bg: #0e1116; --panel: #161b24; --panel2: #1d2430; --line: #2a3342;
@@ -16,12 +16,13 @@
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   .wrap { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
   h1 .logo { color: var(--accent); }
   .gh { font-size: 13px; margin-top: 4px; }
   .gh a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }
   .gh a:hover { color: var(--accent2); border-color: var(--accent2); }
+  .head-right { display: flex; flex-direction: column; align-items: flex-end; gap: 9px; }
   .badge {
     font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
     color: var(--muted); background: var(--panel);
@@ -29,6 +30,18 @@
   .badge.ready { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
   .badge.loading { color: var(--accent2); border-color: rgba(251, 146, 60, .4); }
   .badge.error { color: var(--err); border-color: rgba(248, 113, 113, .4); }
+
+  /* sélecteur de langue : deux drapeaux, la langue active en couleur */
+  .langs { display: flex; gap: 6px; }
+  .lang {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 7px;
+    padding: 1px 6px; font-size: 16px; line-height: 1.3; cursor: pointer;
+    font-family: inherit; filter: grayscale(1); opacity: .45;
+    transition: opacity .15s, filter .15s, border-color .15s;
+  }
+  .lang:hover { opacity: .8; }
+  .lang[aria-pressed="true"] { opacity: 1; filter: none; border-color: var(--accent); }
+  .lang:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
 
   .card {
     background: var(--panel); border: 1px solid var(--line);
@@ -156,17 +169,23 @@
       <h1><span class="logo">pyclean-audio</span></h1>
       <div class="gh"><a href="https://github.com/AurelD16/pyclean-audio" target="_blank" rel="noopener">github.com/AurelD16/pyclean-audio</a></div>
     </div>
-    <div id="modelBadge" class="badge">Modèle…</div>
+    <div class="head-right">
+      <div id="modelBadge" class="badge">Loading model…</div>
+      <div class="langs" role="group" aria-label="Language">
+        <button type="button" class="lang" data-lang="en" title="English" aria-label="English" aria-pressed="true">🇬🇧</button>
+        <button type="button" class="lang" data-lang="fr" title="Français" aria-label="Français" aria-pressed="false">🇫🇷</button>
+      </div>
+    </div>
   </header>
 
   <div class="card">
     <div class="seg">
-      <button id="modeFile" class="active">Fichier</button>
-      <button id="modeFolder">Dossier (récursif)</button>
+      <button id="modeFile" class="active" data-i18n="ui.mode_file">File</button>
+      <button id="modeFolder" data-i18n="ui.mode_folder">Folder (recursive)</button>
     </div>
     <div id="drop" class="drop">
-      <div class="big" id="dropTitle">Glissez un fichier audio ou vidéo ici</div>
-      <div class="hint" id="dropHint">ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…</div>
+      <div class="big" id="dropTitle">Drop an audio or video file here</div>
+      <div class="hint" id="dropHint">or click to browse — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…</div>
     </div>
     <input type="file" id="fileInput" hidden
            accept=".wav,.mp3,.flac,.ogg,.oga,.m4a,.aac,.opus,.wma,.aiff,.aif,.mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.mpg,.mpeg,.wmv,.flv,audio/*,video/*">
@@ -174,36 +193,36 @@
 
     <div class="opts">
       <div class="opt">
-        <label class="t" for="inputSr">Résolution d'entrée</label>
+        <label class="t" for="inputSr" data-i18n="ui.opt_input_sr">Input resolution</label>
         <select id="inputSr">
-          <option value="16000" selected>Automatique — 16 kHz (recommandé)</option>
-          <option value="8000">8 kHz (source très dégradée)</option>
-          <option value="24000">24 kHz</option>
+          <option value="16000" selected data-i18n="ui.opt_sr_auto">Automatic — 16 kHz (recommended)</option>
+          <option value="8000" data-i18n="ui.opt_sr_8k">8 kHz (heavily degraded source)</option>
+          <option value="24000" data-i18n="ui.opt_sr_24k">24 kHz</option>
         </select>
       </div>
       <div class="opt">
-        <label class="t" for="cutoff">Cutoff (Hz, avancé)</label>
+        <label class="t" for="cutoff" data-i18n="ui.opt_cutoff">Cutoff (Hz, advanced)</label>
           <input type="number" id="cutoff" placeholder="auto" min="1000" step="100">
       </div>
       <div class="opt hidden" id="formatOpt">
-        <label class="t" for="outFormat">Format de sortie</label>
+        <label class="t" for="outFormat" data-i18n="ui.opt_out_format">Output format</label>
         <select id="outFormat">
-          <option value="mp3" selected>MP3 (192 kbit/s)</option>
-          <option value="wav">WAV 48 kHz (non compressé)</option>
+          <option value="mp3" selected data-i18n="ui.opt_out_mp3">MP3 (192 kbit/s)</option>
+          <option value="wav" data-i18n="ui.opt_out_wav">WAV 48 kHz (uncompressed)</option>
         </select>
       </div>
     </div>
 
     <label class="check">
       <input type="checkbox" id="denoise">
-      <span><b>Réduire le bruit</b> <span class="desc">— active le débruiteur UL-UNAS avant l'extension de bande (à n'utiliser que si l'audio est bruité)</span></span>
+      <span><b data-i18n="ui.opt_denoise">Reduce noise</b> <span class="desc" id="denoiseDesc" data-i18n="ui.opt_denoise_desc">— turns on the UL-UNAS denoiser before bandwidth extension (use only when the audio is noisy)</span></span>
     </label>
     <label class="check" id="transcribeRow">
       <input type="checkbox" id="transcribe">
-      <span><b>Transcrire l'audio nettoyé</b> <span class="desc" id="transcribeDesc">— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)</span></span>
+      <span><b data-i18n="ui.opt_transcribe">Transcribe the cleaned audio</b> <span class="desc" id="transcribeDesc"></span></span>
     </label>
 
-    <button class="primary" id="go" disabled>Améliorer l'audio</button>
+    <button class="primary" id="go" disabled>Enhance audio</button>
     <div class="error" id="errorBox"></div>
   </div>
 
@@ -211,7 +230,7 @@
     <div class="stage" id="stageText">…</div>
     <div class="bar" id="bar"><div></div></div>
     <div class="progress-actions hidden" id="progressActions">
-      <button class="ghost" id="cancelBtn">Annuler le traitement</button>
+      <button class="ghost" id="cancelBtn">Cancel processing</button>
     </div>
   </div>
 
@@ -225,32 +244,32 @@
     <div id="singleBlock">
       <div id="videoBlock" class="hidden">
         <div class="player">
-          <div class="lbl"><span>Vidéo avec audio amélioré</span></div>
+          <div class="lbl"><span data-i18n="ui.res_video">Video with enhanced audio</span></div>
           <video id="videoPlayer" controls></video>
         </div>
       </div>
 
       <div class="ab" id="abBlock">
         <div class="lbl">
-          <span>Comparaison A/B — la lecture est liée (même timecode)</span>
+          <span data-i18n="ui.res_ab_title">A/B comparison — playback is linked (same timecode)</span>
           <span class="abbtns">
-            <button class="ghost sm" id="playA" type="button">▶ Origine</button>
-            <button class="ghost sm" id="playB" type="button">▶ Amélioré</button>
-            <label class="sm"><input type="checkbox" id="abLink" checked> lié</label>
+            <button class="ghost sm" id="playA" type="button" data-i18n="ui.res_ab_a">▶ Source</button>
+            <button class="ghost sm" id="playB" type="button" data-i18n="ui.res_ab_b">▶ Enhanced</button>
+            <label class="sm"><input type="checkbox" id="abLink" checked> <span data-i18n="ui.res_ab_linked">linked</span></label>
           </span>
         </div>
         <div class="player">
-          <div class="lbl"><span>Audio d'origine (décodé 48 kHz mono)</span></div>
+          <div class="lbl"><span data-i18n="ui.res_orig">Original audio (decoded to 48 kHz mono)</span></div>
           <audio id="origPlayer" controls preload="metadata"></audio>
         </div>
         <div class="player">
-          <div class="lbl"><span>Audio amélioré — LavaSR v2 (48 kHz)</span></div>
+          <div class="lbl"><span data-i18n="ui.res_enh">Enhanced audio — LavaSR v2 (48 kHz)</span></div>
           <audio id="enhPlayer" controls preload="metadata"></audio>
         </div>
       </div>
 
       <div class="player" id="transcriptBlock" style="display:none">
-        <div class="lbl"><span>Transcription — Parakeet TDT</span></div>
+        <div class="lbl"><span data-i18n="ui.res_transcript">Transcript — Parakeet TDT</span></div>
         <pre id="transcriptText" class="transcript"></pre>
       </div>
     </div>
@@ -258,20 +277,412 @@
     <div class="btns" id="btns"></div>
     <div class="note" id="note"></div>
     <div class="foot-actions">
-      <button class="ghost" id="deleteBtn">Supprimer les résultats</button>
-      <button class="primary" id="again">Traiter un autre fichier</button>
+      <button class="ghost" id="deleteBtn" data-i18n="ui.delete">Delete results</button>
+      <button class="primary" id="again" data-i18n="ui.again">Process another file</button>
     </div>
   </div>
 </div>
 
+<!-- Dictionnaire de l'interface. `server` reprend les clés émises par l'API
+     (app/messages.py : STAGES et ERRORS) ; `ui` n'est que du propre à la page.
+     Les deux langues sont obligatoires : tests/test_i18n.py le vérifie, ainsi
+     que le fait que le texte anglais du corps de la page est bien à jour. -->
+<script type="application/json" id="i18n">
+{
+  "server": {
+    "en": {
+      "decode": "Decoding the audio…",
+      "extract_audio": "Extracting the audio track…",
+      "enhance": "Enhancing the audio (LavaSR v2)…",
+      "mp3": "Encoding MP3…",
+      "remux": "Remuxing the video…",
+      "transcribe": "Transcribing (Parakeet)…",
+      "queued": "Queued…",
+      "folder_queued": "Folder: {count} files queued…",
+      "file_step": "File {index}/{total} — {name}: {inner}",
+      "folder_done": "Done — {done}/{total} files",
+      "done": "Done",
+      "cancelled": "Cancelled",
+      "error": "Error",
+      "too_many_jobs": "Too many jobs running or waiting (max {max}).",
+      "queue_full": "Queue full ({max} jobs): try again in a moment.",
+      "bad_input_sr": "input_sr must be 8000, 16000 or 24000",
+      "bad_output_format": "output_format must be wav or mp3",
+      "transcribe_unavailable": "Transcription unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart the server.",
+      "unsupported_format": "Unsupported format: {ext}",
+      "bad_filename": "Invalid file name: {name}",
+      "file_too_large": "File too large (2 GB max): {name}",
+      "folder_too_large": "Folder too large in total",
+      "empty_file": "Empty file: {name}",
+      "no_files": "No file received",
+      "too_many_files": "Too many files (max {max})",
+      "no_media_in_folder": "No supported audio/video file in the folder",
+      "no_audio_track": "No audio track found in the file.",
+      "no_duration": "Could not determine the duration of the file.",
+      "too_long": "File too long: {minutes} min (max {max_minutes} min, PYCLEAN_MAX_DURATION).",
+      "ffprobe_failed": "ffprobe failed: {detail}",
+      "ffmpeg_failed": "ffmpeg failed: {detail}",
+      "ffmpeg_timeout": "ffmpeg timed out after {seconds} s",
+      "ffmpeg_no_output": "Could not read ffmpeg output",
+      "job_not_found": "Job not found",
+      "file_not_found": "File not found",
+      "zip_unavailable": "Archive unavailable",
+      "job_already_done": "This job has already finished.",
+      "job_running": "Job in progress: cancel it first.",
+      "no_file_done": "No file was processed successfully."
+    },
+    "fr": {
+      "decode": "Décodage de l'audio…",
+      "extract_audio": "Extraction de la piste audio…",
+      "enhance": "Amélioration de l'audio (LavaSR v2)…",
+      "mp3": "Encodage MP3…",
+      "remux": "Recodage de la vidéo…",
+      "transcribe": "Transcription (Parakeet)…",
+      "queued": "En file d'attente…",
+      "folder_queued": "Dossier : {count} fichiers en file d'attente…",
+      "file_step": "Fichier {index}/{total} — {name} : {inner}",
+      "folder_done": "Terminé — {done}/{total} fichiers",
+      "done": "Terminé",
+      "cancelled": "Annulé",
+      "error": "Erreur",
+      "too_many_jobs": "Trop de traitements en cours ou en attente (max {max}).",
+      "queue_full": "File d'attente pleine ({max} traitements) : réessayez dans un instant.",
+      "bad_input_sr": "input_sr doit être 8000, 16000 ou 24000",
+      "bad_output_format": "output_format doit être wav ou mp3",
+      "transcribe_unavailable": "Transcription indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr puis redémarrez le serveur.",
+      "unsupported_format": "Format non pris en charge : {ext}",
+      "bad_filename": "Nom de fichier invalide : {name}",
+      "file_too_large": "Fichier trop volumineux (2 Go max) : {name}",
+      "folder_too_large": "Dossier trop volumineux au total",
+      "empty_file": "Fichier vide : {name}",
+      "no_files": "Aucun fichier reçu",
+      "too_many_files": "Trop de fichiers (max {max})",
+      "no_media_in_folder": "Aucun fichier audio/vidéo pris en charge dans le dossier",
+      "no_audio_track": "Aucune piste audio détectée dans le fichier.",
+      "no_duration": "Impossible de déterminer la durée du fichier.",
+      "too_long": "Fichier trop long : {minutes} min (maximum {max_minutes} min, PYCLEAN_MAX_DURATION).",
+      "ffprobe_failed": "ffprobe a échoué : {detail}",
+      "ffmpeg_failed": "ffmpeg a échoué : {detail}",
+      "ffmpeg_timeout": "ffmpeg a expiré après {seconds} s",
+      "ffmpeg_no_output": "Impossible de lire la sortie de ffmpeg",
+      "job_not_found": "Job introuvable",
+      "file_not_found": "Fichier introuvable",
+      "zip_unavailable": "Archive indisponible",
+      "job_already_done": "Le traitement est déjà terminé.",
+      "job_running": "Traitement en cours : annulez-le d'abord.",
+      "no_file_done": "Aucun fichier traité avec succès."
+    }
+  },
+  "ui": {
+    "en": {
+      "ui.title": "pyclean-audio — Audio enhancement",
+      "ui.badge_loading": "Loading model…",
+      "ui.badge_ready": "LavaSR v2 ready — {device}",
+      "ui.badge_model_error": "Model error: {err}",
+      "ui.badge_first_run": " (first run: download)",
+      "ui.device_cuda": "GPU (CUDA)",
+      "ui.device_cpu": "CPU",
+      "ui.asr_ready": " · Parakeet ready",
+      "ui.asr_loading": " · Loading Parakeet…",
+      "ui.asr_error": " · Parakeet error",
+      "ui.asr_missing": " · Parakeet not installed (./run.sh --asr)",
+      "ui.mode_file": "File",
+      "ui.mode_folder": "Folder (recursive)",
+      "ui.drop_file_title": "Drop an audio or video file here",
+      "ui.drop_file_hint": "or click to browse — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…",
+      "ui.drop_folder_title": "Drop a folder here (subfolders included)",
+      "ui.drop_folder_hint": "or click to browse — every audio/video file is detected recursively",
+      "ui.drop_selected": "File selected: {name}",
+      "ui.drop_replace": "{size} — click or drop another file to replace",
+      "ui.drop_folder_n": "Folder: {n} audio/video file(s)",
+      "ui.drop_folder_empty": "No supported audio/video file in this folder",
+      "ui.drop_folder_size": "{size} — click or drop another folder to replace",
+      "ui.drop_folder_size_dir": "{size} — {dirs} — click or drop another folder to replace",
+      "ui.drop_subfolders": "{n} subfolder(s)",
+      "ui.opt_input_sr": "Input resolution",
+      "ui.opt_sr_auto": "Automatic — 16 kHz (recommended)",
+      "ui.opt_sr_8k": "8 kHz (heavily degraded source)",
+      "ui.opt_sr_24k": "24 kHz",
+      "ui.opt_cutoff": "Cutoff (Hz, advanced)",
+      "ui.opt_out_format": "Output format",
+      "ui.opt_out_mp3": "MP3 (192 kbit/s)",
+      "ui.opt_out_wav": "WAV 48 kHz (uncompressed)",
+      "ui.opt_denoise": "Reduce noise",
+      "ui.opt_denoise_desc": "— turns on the UL-UNAS denoiser before bandwidth extension (use only when the audio is noisy)",
+      "ui.opt_transcribe": "Transcribe the cleaned audio",
+      "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
+      "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
+      "ui.go": "Enhance audio",
+      "ui.go_n": "Enhance audio — {n} file(s)",
+      "ui.cancel": "Cancel processing",
+      "ui.cancelling": "Cancelling…",
+      "ui.delete": "Delete results",
+      "ui.again": "Process another file",
+      "ui.stage_uploading": "Uploading file…",
+      "ui.stage_uploading_folder": "Uploading folder ({n} files)…",
+      "ui.stage_queued_n": "Queued — {n} job(s) ahead…",
+      "ui.stage_queued_next": "Queued — next job…",
+      "ui.res_video": "Video with enhanced audio",
+      "ui.res_ab_title": "A/B comparison — playback is linked (same timecode)",
+      "ui.res_ab_a": "▶ Source",
+      "ui.res_ab_b": "▶ Enhanced",
+      "ui.res_ab_linked": "linked",
+      "ui.res_orig": "Original audio (decoded to 48 kHz mono)",
+      "ui.res_enh": "Enhanced audio — LavaSR v2 (48 kHz)",
+      "ui.res_transcript": "Transcript — Parakeet TDT",
+      "ui.res_title_audio": "Enhanced audio: {name}",
+      "ui.res_title_video": "Enhanced video: {name}",
+      "ui.res_title_folder": "Folder processed: {ok}/{total} file(s) succeeded",
+      "ui.res_failed": " — {ko} failed",
+      "ui.res_format": " — output format: {fmt}",
+      "ui.res_cancelled_title": "Processing cancelled",
+      "ui.res_cancelled_note": "The files that had been produced were deleted from the server.",
+      "ui.state_done": "✓ Done",
+      "ui.state_error": "✗ Error",
+      "ui.link_mp3": "Enhanced MP3",
+      "ui.link_wav": "Enhanced WAV",
+      "ui.link_mp4": "MP4",
+      "ui.link_transcript": "Transcript",
+      "ui.link_srt": "Subtitles",
+      "ui.dl_mp3": "Download audio (MP3 192 kbit/s)",
+      "ui.dl_video": "Download video (MP4)",
+      "ui.dl_wav": "Download audio (WAV 48 kHz)",
+      "ui.dl_transcript": "Download transcript (TXT)",
+      "ui.dl_srt": "Download subtitles (SRT)",
+      "ui.dl_original": "Download original audio (WAV)",
+      "ui.dl_zip": "Download everything (ZIP)",
+      "ui.note_audio": "The audio is delivered at 48 kHz mono, with the bandwidth extended by LavaSR v2. Downloadable as MP3 (192 kbit/s) or WAV (48 kHz, uncompressed).",
+      "ui.note_video": "The video track is kept as is (no re-encoding); the audio is replaced by the enhanced version (AAC 192 kbit/s, 48 kHz). The enhanced audio is also available as MP3 and WAV. Any existing subtitles are not carried over.",
+      "ui.note_folder_mp3": "Each audio file is exported as MP3 (192 kbit/s); ",
+      "ui.note_folder_wav": "Each audio file is exported as WAV 48 kHz (uncompressed); ",
+      "ui.note_folder_tail": "bandwidth extended by LavaSR v2 (48 kHz mono). For videos, the video track is kept as is and the audio replaced (MP4, AAC 192 kbit/s).",
+      "ui.transcript_empty": "(empty)",
+      "ui.transcript_unavailable": "(unavailable)",
+      "ui.err_job_gone": "Job not found (server restarted?)",
+      "ui.err_unknown": "Unknown error",
+      "ui.size_gb": "GB",
+      "ui.size_mb": "MB",
+      "ui.size_kb": "KB"
+    },
+    "fr": {
+      "ui.title": "pyclean-audio — Amélioration audio",
+      "ui.badge_loading": "Chargement du modèle…",
+      "ui.badge_ready": "LavaSR v2 prêt — {device}",
+      "ui.badge_model_error": "Erreur modèle : {err}",
+      "ui.badge_first_run": " (1er lancement : téléchargement)",
+      "ui.device_cuda": "GPU (CUDA)",
+      "ui.device_cpu": "CPU",
+      "ui.asr_ready": " · Parakeet prêt",
+      "ui.asr_loading": " · Chargement Parakeet…",
+      "ui.asr_error": " · Parakeet en erreur",
+      "ui.asr_missing": " · Parakeet non installé (./run.sh --asr)",
+      "ui.mode_file": "Fichier",
+      "ui.mode_folder": "Dossier (récursif)",
+      "ui.drop_file_title": "Glissez un fichier audio ou vidéo ici",
+      "ui.drop_file_hint": "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…",
+      "ui.drop_folder_title": "Glissez un dossier ici (sous-dossiers inclus)",
+      "ui.drop_folder_hint": "ou cliquez pour parcourir — tous les fichiers audio/vidéo seront détectés récursivement",
+      "ui.drop_selected": "Fichier sélectionné : {name}",
+      "ui.drop_replace": "{size} — cliquez ou glissez un autre fichier pour remplacer",
+      "ui.drop_folder_n": "Dossier : {n} fichier(s) audio/vidéo",
+      "ui.drop_folder_empty": "Aucun fichier audio/vidéo pris en charge dans ce dossier",
+      "ui.drop_folder_size": "{size} — cliquez ou glissez un autre dossier pour remplacer",
+      "ui.drop_folder_size_dir": "{size} — {dirs} — cliquez ou glissez un autre dossier pour remplacer",
+      "ui.drop_subfolders": "{n} sous-dossier(s)",
+      "ui.opt_input_sr": "Résolution d'entrée",
+      "ui.opt_sr_auto": "Automatique — 16 kHz (recommandé)",
+      "ui.opt_sr_8k": "8 kHz (source très dégradée)",
+      "ui.opt_sr_24k": "24 kHz",
+      "ui.opt_cutoff": "Cutoff (Hz, avancé)",
+      "ui.opt_out_format": "Format de sortie",
+      "ui.opt_out_mp3": "MP3 (192 kbit/s)",
+      "ui.opt_out_wav": "WAV 48 kHz (non compressé)",
+      "ui.opt_denoise": "Réduire le bruit",
+      "ui.opt_denoise_desc": "— active le débruiteur UL-UNAS avant l'extension de bande (à n'utiliser que si l'audio est bruité)",
+      "ui.opt_transcribe": "Transcrire l'audio nettoyé",
+      "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
+      "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
+      "ui.go": "Améliorer l'audio",
+      "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
+      "ui.cancel": "Annuler le traitement",
+      "ui.cancelling": "Annulation…",
+      "ui.delete": "Supprimer les résultats",
+      "ui.again": "Traiter un autre fichier",
+      "ui.stage_uploading": "Envoi du fichier…",
+      "ui.stage_uploading_folder": "Envoi du dossier ({n} fichiers)…",
+      "ui.stage_queued_n": "En file d'attente — {n} traitement(s) avant celui-ci…",
+      "ui.stage_queued_next": "En file d'attente — prochain traitement…",
+      "ui.res_video": "Vidéo avec audio amélioré",
+      "ui.res_ab_title": "Comparaison A/B — la lecture est liée (même timecode)",
+      "ui.res_ab_a": "▶ Origine",
+      "ui.res_ab_b": "▶ Amélioré",
+      "ui.res_ab_linked": "lié",
+      "ui.res_orig": "Audio d'origine (décodé 48 kHz mono)",
+      "ui.res_enh": "Audio amélioré — LavaSR v2 (48 kHz)",
+      "ui.res_transcript": "Transcription — Parakeet TDT",
+      "ui.res_title_audio": "Audio amélioré : {name}",
+      "ui.res_title_video": "Vidéo améliorée : {name}",
+      "ui.res_title_folder": "Dossier traité : {ok}/{total} fichier(s) réussi(s)",
+      "ui.res_failed": " — {ko} en échec",
+      "ui.res_format": " — format de sortie : {fmt}",
+      "ui.res_cancelled_title": "Traitement annulé",
+      "ui.res_cancelled_note": "Les fichiers produits ont été supprimés du serveur.",
+      "ui.state_done": "✓ Terminé",
+      "ui.state_error": "✗ Erreur",
+      "ui.link_mp3": "MP3 amélioré",
+      "ui.link_wav": "WAV amélioré",
+      "ui.link_mp4": "MP4",
+      "ui.link_transcript": "Transcription",
+      "ui.link_srt": "Sous-titres",
+      "ui.dl_mp3": "Télécharger l'audio (MP3 192 kbit/s)",
+      "ui.dl_video": "Télécharger la vidéo (MP4)",
+      "ui.dl_wav": "Télécharger l'audio (WAV 48 kHz)",
+      "ui.dl_transcript": "Télécharger la transcription (TXT)",
+      "ui.dl_srt": "Télécharger les sous-titres (SRT)",
+      "ui.dl_original": "Télécharger l'audio d'origine (WAV)",
+      "ui.dl_zip": "Télécharger tout (ZIP)",
+      "ui.note_audio": "L'audio est restitué en 48 kHz mono, bande passante étendue par le modèle LavaSR v2. Téléchargeable en MP3 (192 kbit/s) ou en WAV (48 kHz, non compressé).",
+      "ui.note_video": "La piste vidéo est conservée telle quelle (sans ré-encodage) ; l'audio est remplacé par la version améliorée (AAC 192 kbit/s, 48 kHz). L'audio amélioré est aussi disponible en MP3 et en WAV. Les sous-titres éventuels ne sont pas repris.",
+      "ui.note_folder_mp3": "Chaque fichier audio est exporté en MP3 (192 kbit/s) ; ",
+      "ui.note_folder_wav": "Chaque fichier audio est exporté en WAV 48 kHz (non compressé) ; ",
+      "ui.note_folder_tail": "bande passante étendue par LavaSR v2 (48 kHz mono). Pour les vidéos, la piste vidéo est conservée telle quelle et l'audio remplacé (MP4, AAC 192 kbit/s).",
+      "ui.transcript_empty": "(vide)",
+      "ui.transcript_unavailable": "(indisponible)",
+      "ui.err_job_gone": "Job introuvable (serveur redémarré ?)",
+      "ui.err_unknown": "Erreur inconnue",
+      "ui.size_gb": "Go",
+      "ui.size_mb": "Mo",
+      "ui.size_kb": "Ko"
+    }
+  }
+}
+</script>
+
 <script>
 const $ = (id) => document.getElementById(id);
+const DICT = JSON.parse($("i18n").textContent);
+const LANGS = ["en", "fr"];
+const TABLES = {};   // table plate (server + ui), par langue
+const DEFAULT_LANG = "en";          // anglais par défaut, langue d'origine de la page
+const STORAGE_KEY = "pyclean.lang";
+
 let mode = "file";
 let currentFile = null;
 let currentFiles = [];
 let jobId = null;
 let pollTimer = null;
 
+// ------------------------------------------------------------------ i18n
+let lang = DEFAULT_LANG;
+try {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (LANGS.includes(saved)) lang = saved;
+} catch (_) { /* localStorage indisponible (navigation privée) */ }
+document.documentElement.lang = lang;
+
+function buildTables() {
+  // une table plate par langue ; `ui` gagne sur `server` en cas de collision
+  // (le test `test_la_page_ne_declasse_pas_les_textes_du_serveur` l'interdit).
+  for (const l of LANGS) TABLES[l] = Object.assign({}, DICT.server[l], DICT.ui[l]);
+}
+buildTables();
+
+function lookup(key) {
+  const table = TABLES[lang] || TABLES[DEFAULT_LANG];
+  return table[key] != null ? table[key] : null;
+}
+
+function fill(tpl, params) {
+  if (!params) return tpl;
+  return tpl.replace(/\{(\w+)\}/g, (m, k) => (params[k] != null ? String(params[k]) : m));
+}
+
+function t(key, params) {
+  const tpl = lookup(key);
+  return tpl == null ? key : fill(tpl, params);
+}
+
+/* Traduit une étape : {key, args, raw}. `raw` est le texte du serveur, utilisé
+   si la clé nous est inconnue (version plus ancienne de l'API). `inner_key`
+   porte l'étape imbriquée d'un job « dossier ». */
+function stageText(st) {
+  if (!st) return "";
+  if (!st.key) return st.raw || "";
+  const tpl = lookup(st.key);
+  if (tpl == null) return st.raw || st.key;
+  const params = Object.assign({}, st.args);
+  if (params.inner_key) {
+    params.inner = stageText({ key: params.inner_key, args: params.inner_args });
+  }
+  return fill(tpl, params);
+}
+
+/* Message d'erreur du serveur : `code`/`params` traduisibles, `raw` en repli. */
+function errorText(code, params, raw) {
+  if (code) {
+    const tpl = lookup(code);
+    if (tpl != null) return fill(tpl, params);
+  }
+  return raw || "";
+}
+
+const jobStage = (j) => stageText({ key: j.stage_key, args: j.stage_args, raw: j.stage });
+
+/* Les libellés des résultats (boutons de téléchargement, lignes d'un dossier)
+   sont écrits dans des nœuds créés à la volée : ils sont enregistrés ici pour
+   pouvoir être retraduits quand la langue change, sans reconstruire le DOM
+   (on ne veut pas perdre la position de lecture ni re-télécharger la
+   transcription). */
+const BINDINGS = [];
+
+function bind(el, fn) {
+  if (!el) return;
+  const i = BINDINGS.findIndex(b => b.el === el);
+  if (i >= 0) BINDINGS[i] = { el, fn };   // un nœud, une liaison
+  else BINDINGS.push({ el, fn });
+  el.textContent = fn();
+}
+
+function T(el, key, params) {
+  bind(el, () => t(key, params));
+}
+
+function pruneBindings() {
+  for (let i = BINDINGS.length - 1; i >= 0; i--) {
+    if (!BINDINGS[i].el.isConnected) BINDINGS.splice(i, 1);
+  }
+}
+
+function replayBindings() {
+  for (const b of BINDINGS) b.el.textContent = b.fn();
+  pruneBindings();
+}
+
+function applyLang(next) {
+  lang = LANGS.includes(next) ? next : DEFAULT_LANG;
+  document.documentElement.lang = lang;
+  try { localStorage.setItem(STORAGE_KEY, lang); } catch (_) {}
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.dataset.i18n);
+  }
+  document.title = t("ui.title");
+  for (const b of document.querySelectorAll(".lang")) {
+    b.setAttribute("aria-pressed", String(b.dataset.lang === lang));
+  }
+  replayBindings();
+  paintFolderTitle();
+  paintSelection();
+  paintCancel();
+  paintTranscribeRow();
+  paintBadge();
+  if (currentStage) $("stageText").textContent = stageText(currentStage);
+}
+
+for (const b of document.querySelectorAll(".lang")) {
+  b.addEventListener("click", () => applyLang(b.dataset.lang));
+}
+
+// ------------------------------------------------------------------ divers
 const drop = $("drop"), fileInput = $("fileInput"), folderInput = $("folderInput"), go = $("go");
 const dropTitle = $("dropTitle"), dropHint = $("dropHint");
 
@@ -286,18 +697,43 @@ function extOf(name) {
 }
 
 function fmtSize(b) {
-  if (b > 1e9) return (b / 1e9).toFixed(2) + " Go";
-  if (b > 1e6) return (b / 1e6).toFixed(1) + " Mo";
-  return (b / 1e3).toFixed(0) + " Ko";
+  if (b > 1e9) return (b / 1e9).toFixed(2) + " " + t("ui.size_gb");
+  if (b > 1e6) return (b / 1e6).toFixed(1) + " " + t("ui.size_mb");
+  return (b / 1e3).toFixed(0) + " " + t("ui.size_kb");
+}
+
+// ------------------------------------------------------------------ dépôt
+/* Un seul endroit écrit le libellé du dépôt et celui du bouton : changer de
+   langue n'a plus qu'à le rappeler. */
+function paintSelection() {
+  const n = currentFiles.length;
+  const folder = mode === "folder";
+  if (folder && n) {
+    const total = currentFiles.reduce((s, x) => s + x.file.size, 0);
+    const dirs = new Set(
+      currentFiles.map(x => x.rel.split("/").slice(0, -1).join("/")).filter(Boolean)
+    );
+    dropTitle.textContent = t("ui.drop_folder_n", { n });
+    dropHint.textContent = t(dirs.size ? "ui.drop_folder_size_dir" : "ui.drop_folder_size",
+                             { size: fmtSize(total), dirs: t("ui.drop_subfolders", { n: dirs.size }) });
+  } else if (folder) {
+    dropTitle.textContent = t("ui.drop_folder_empty");
+    dropHint.textContent = t("ui.drop_folder_hint");
+  } else if (currentFile) {
+    dropTitle.textContent = t("ui.drop_selected", { name: currentFile.name });
+    dropHint.textContent = t("ui.drop_replace", { size: fmtSize(currentFile.size) });
+  } else {
+    dropTitle.textContent = t("ui.drop_file_title");
+    dropHint.textContent = t("ui.drop_file_hint");
+  }
+  go.disabled = folder ? n === 0 : !currentFile;
+  go.textContent = folder && n ? t("ui.go_n", { n }) : t("ui.go");
 }
 
 function setFile(f) {
   currentFile = f;
   currentFiles = [];
-  dropTitle.textContent = "Fichier sélectionné : " + f.name;
-  dropHint.textContent = fmtSize(f.size) + " — cliquez ou glissez un autre fichier pour remplacer";
-  go.disabled = false;
-  go.textContent = "Améliorer l'audio";
+  paintSelection();
   $("errorBox").style.display = "none";
 }
 
@@ -309,18 +745,7 @@ function setFolder(raw) {
     return ALLOWED_EXT.has(extOf(file.name));
   });
   currentFile = null;
-  const total = currentFiles.reduce((s, x) => s + x.file.size, 0);
-  const dirs = [...new Set(
-    currentFiles.map(x => x.rel.split("/").slice(0, -1).join("/")).filter(Boolean)
-  )];
-  dropTitle.textContent = `Dossier : ${currentFiles.length} fichier(s) audio/vidéo`;
-  dropHint.textContent = currentFiles.length
-    ? `${fmtSize(total)}${dirs.length ? " — " + dirs.length + " sous-dossier(s)" : ""} — cliquez ou glissez un autre dossier pour remplacer`
-    : "Aucun fichier audio/vidéo pris en charge dans ce dossier";
-  go.disabled = currentFiles.length === 0;
-  go.textContent = currentFiles.length
-    ? `Améliorer l'audio — ${currentFiles.length} fichier(s)`
-    : "Améliorer l'audio";
+  paintSelection();
   $("errorBox").style.display = "none";
 }
 
@@ -333,15 +758,7 @@ function setMode(m) {
   currentFiles = [];
   fileInput.value = "";
   folderInput.value = "";
-  go.disabled = true;
-  go.textContent = "Améliorer l'audio";
-  if (m === "file") {
-    dropTitle.textContent = "Glissez un fichier audio ou vidéo ici";
-    dropHint.textContent = "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…";
-  } else {
-    dropTitle.textContent = "Glissez un dossier ici (sous-dossiers inclus)";
-    dropHint.textContent = "ou cliquez pour parcourir — tous les fichiers audio/vidéo seront détectés récursivement";
-  }
+  paintSelection();
   $("errorBox").style.display = "none";
 }
 
@@ -405,10 +822,14 @@ function readEntry(entry, dir, out) {
   });
 }
 
+// ------------------------------------------------------------------ progression
+let currentStage = null;
+
 function showProgress(stage, progress) {
+  currentStage = stage;
   $("progressCard").style.display = "block";
   $("results").style.display = "none";
-  $("stageText").textContent = stage;
+  $("stageText").textContent = stageText(stage);
   const bar = $("bar");
   bar.classList.remove("indet");
   bar.firstElementChild.style.width = Math.round(progress * 100) + "%";
@@ -417,22 +838,26 @@ function showProgress(stage, progress) {
 function stopPolling() {
   clearInterval(pollTimer);
   pollTimer = null;
+  currentStage = null;
   $("progressActions").classList.add("hidden");
 }
 
 async function poll() {
   try {
     const r = await fetch("/api/jobs/" + jobId);
-    if (!r.ok) throw new Error("Job introuvable (serveur redémarré ?)");
+    if (!r.ok) {
+      showError("ui.err_job_gone");
+      return;
+    }
     const job = await r.json();
     if (job.state === "queued") {
       // l'inférence est sérialisée : un traitement attend son tour
       const pos = job.queue_position || 0;
-      showProgress(pos > 0 ? `En file d'attente — ${pos} traitement(s) avant celui-ci…`
-                           : "En file d'attente — prochain traitement…", 0);
+      showProgress({ key: pos > 0 ? "ui.stage_queued_n" : "ui.stage_queued_next",
+                     args: { n: pos } }, 0);
       $("progressActions").classList.remove("hidden");
     } else if (job.state === "running") {
-      showProgress(job.stage, job.progress);
+      showProgress(jobStage(job), job.progress);
       $("progressActions").classList.remove("hidden");
     } else if (job.state === "done") {
       stopPolling();
@@ -442,30 +867,35 @@ async function poll() {
       go.disabled = false;
       $("progressCard").style.display = "none";
       $("results").style.display = "block";
-      $("resultTitle").textContent = "Traitement annulé";
-      $("note").textContent = "Les fichiers produits ont été supprimés du serveur.";
+      T($("resultTitle"), "ui.res_cancelled_title");
+      T($("note"), "ui.res_cancelled_note");
     } else if (job.state === "error") {
-      stopPolling();
-      showError(job.error || "Erreur inconnue");
+      showError(job.error_code, job.error_params, job.error);
     }
   } catch (e) {
-    stopPolling();
-    showError(e.message);
+    showError(null, null, e.message);
   }
+}
+
+let cancelling = false;
+
+function paintCancel() {
+  $("cancelBtn").textContent = t(cancelling ? "ui.cancelling" : "ui.cancel");
 }
 
 async function cancelJob() {
   if (!jobId) return;
+  cancelling = true;
   $("cancelBtn").disabled = true;
-  $("cancelBtn").textContent = "Annulation…";
+  paintCancel();
   try {
     const r = await fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      throw new Error(d.detail || "Erreur " + r.status);
+      showError(d.code, d.params, d.detail);
     }
   } catch (e) {
-    showError(e.message);
+    showError(null, null, e.message);
   }
 }
 
@@ -476,24 +906,36 @@ async function deleteJob() {
     const r = await fetch("/api/jobs/" + jobId, { method: "DELETE" });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      throw new Error(d.detail || "Erreur " + r.status);
+      $("deleteBtn").disabled = false;
+      showError(d.code, d.params, d.detail);
+      return;
     }
   } catch (e) {
     $("deleteBtn").disabled = false;
-    showError(e.message);
+    showError(null, null, e.message);
     return;
   }
   $("errorBox").style.display = "none";
   $("again").click();
 }
 
-function showError(msg) {
+/* `detail` n'est pas toujours un texte : une erreur de validation de FastAPI
+   (422) renvoie une liste d'objets. On ne veut jamais « [object Object] ». */
+function detailText(detail) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map(e => (e && e.msg) || "").join(" · ");
+  return "";
+}
+
+/* Affiche une erreur. `code`/`params` viennent de l'API et sont retraduits au
+   changement de langue ; `raw` sert quand il n'y a pas de code (message déjà
+   traduit par le client, exception réseau…). */
+function showError(code, params, raw) {
   stopPolling();
   go.disabled = false;
   $("progressCard").style.display = "none";
-  const box = $("errorBox");
-  box.textContent = msg;
-  box.style.display = "block";
+  bind($("errorBox"), () => errorText(code, params, detailText(raw)) || t("ui.err_unknown"));
+  $("errorBox").style.display = "block";
 }
 
 function fileUrl(name) { return "/api/jobs/" + jobId + "/file/" + name; }
@@ -568,6 +1010,7 @@ function renderResults(job) {
 
   const btns = $("btns");
   btns.innerHTML = "";
+  pruneBindings();
 
   if (job.kind === "folder") {
     renderFolderResults(job, btns);
@@ -577,9 +1020,9 @@ function renderResults(job) {
   $("folderBlock").classList.add("hidden");
   $("singleBlock").style.display = "block";
 
-  const stem = job.stem || "fichier";
   const isVideo = job.kind === "video";
-  $("resultTitle").textContent = (isVideo ? "Vidéo" : "Audio") + " amélioré : " + job.filename;
+  T($("resultTitle"), isVideo ? "ui.res_title_video" : "ui.res_title_audio",
+    { name: job.filename });
 
   $("origPlayer").src = fileUrl("original_wav");
   $("enhPlayer").src = fileUrl("enhanced_wav");
@@ -591,8 +1034,8 @@ function renderResults(job) {
   if (job.artifacts && job.artifacts.transcript) {
     tb.style.display = "block";
     fetch(fileUrl("transcript")).then(r => r.ok ? r.text() : "")
-      .then(t => { $("transcriptText").textContent = t || "(vide)"; })
-      .catch(() => { $("transcriptText").textContent = "(indisponible)"; });
+      .then(x => { $("transcriptText").textContent = x || t("ui.transcript_empty"); })
+      .catch(() => { $("transcriptText").textContent = t("ui.transcript_unavailable"); });
   }
 
   const vb = $("videoBlock");
@@ -604,29 +1047,39 @@ function renderResults(job) {
   }
 
   const links = [];
-  if (job.artifacts && job.artifacts.enhanced_mp3)
-    links.push(["enhanced_mp3", "Télécharger l'audio (MP3 192 kbit/s)", true]);
-  if (isVideo) links.push(["video", "Télécharger la vidéo (MP4)", true]);
-  links.push(["enhanced_wav", "Télécharger l'audio (WAV 48 kHz)", true]);
-  if (job.artifacts && job.artifacts.transcript)
-    links.push(["transcript", "Télécharger la transcription (TXT)", true]);
-  if (job.artifacts && job.artifacts.transcript_srt)
-    links.push(["transcript_srt", "Télécharger les sous-titres (SRT)", true]);
-  links.push(["original_wav", "Télécharger l'audio d'origine (WAV)", false]);
-  for (const [name, label, primary] of links) {
+  if (job.artifacts && job.artifacts.enhanced_mp3) links.push(["enhanced_mp3", "ui.dl_mp3", true]);
+  if (isVideo) links.push(["video", "ui.dl_video", true]);
+  links.push(["enhanced_wav", "ui.dl_wav", true]);
+  if (job.artifacts && job.artifacts.transcript) links.push(["transcript", "ui.dl_transcript", true]);
+  if (job.artifacts && job.artifacts.transcript_srt) links.push(["transcript_srt", "ui.dl_srt", true]);
+  links.push(["original_wav", "ui.dl_original", false]);
+  for (const [name, key, primary] of links) {
     const a = document.createElement("a");
     a.href = fileUrl(name);
-    a.textContent = label;
     a.download = "";
     if (primary) a.className = "dl";
     btns.appendChild(a);
+    T(a, key);
   }
 
-  $("note").textContent = isVideo
-    ? "La piste vidéo est conservée telle quelle (sans ré-encodage) ; l'audio est remplacé par la version améliorée (AAC 192 kbit/s, 48 kHz). L'audio amélioré est aussi disponible en MP3 et en WAV. Les sous-titres éventuels ne sont pas repris."
-    : "L'audio est restitué en 48 kHz mono, bande passante étendue par le modèle LavaSR v2. Téléchargeable en MP3 (192 kbit/s) ou en WAV (48 kHz, non compressé).";
+  T($("note"), isVideo ? "ui.note_video" : "ui.note_audio");
 
   $("results").scrollIntoView({ behavior: "smooth" });
+}
+
+// Le titre d'un dossier est composé de trois clés : il est recomposé à chaque
+// changement de langue plutôt que mémorisé dans les bindings.
+let folderJob = null;
+
+function paintFolderTitle() {
+  if (!folderJob) return;
+  const files = folderJob.files || [];
+  const ok = files.filter(f => f.state === "done").length;
+  const ko = files.filter(f => f.state === "error").length;
+  const fmt = folderJob.output_format || "mp3";
+  $("resultTitle").textContent = t("ui.res_title_folder", { ok, total: files.length })
+    + (ko ? t("ui.res_failed", { ko }) : "")
+    + t("ui.res_format", { fmt: fmt === "mp3" ? "MP3" : "WAV" });
 }
 
 function renderFolderResults(job, btns) {
@@ -634,15 +1087,13 @@ function renderFolderResults(job, btns) {
   $("folderBlock").classList.remove("hidden");
 
   const files = job.files || [];
-  const ok = files.filter(f => f.state === "done").length;
-  const ko = files.filter(f => f.state === "error").length;
   const fmt = job.output_format || "mp3";
-  $("resultTitle").textContent =
-    `Dossier traité : ${ok}/${files.length} fichier(s) réussi(s)` + (ko ? ` — ${ko} en échec` : "")
-    + (fmt === "mp3" ? " — format de sortie : MP3" : " — format de sortie : WAV");
+  folderJob = job;
+  paintFolderTitle();
 
   const list = $("folderList");
   list.innerHTML = "";
+  pruneBindings();
   for (const [i, f] of files.entries()) {
     const row = document.createElement("div");
     row.className = "frow" + (f.state === "error" ? " err" : "");
@@ -651,37 +1102,42 @@ function renderFolderResults(job, btns) {
     name.textContent = f.relpath;
     const state = document.createElement("span");
     state.className = "fstate";
-    state.textContent = f.state === "done" ? "✓ Terminé" : f.state === "error" ? "✗ Erreur" : f.state;
     row.appendChild(name);
     row.appendChild(state);
+    // queued/running : la valeur de l'API est neutre, on l'affiche telle quelle
+    if (f.state === "done" || f.state === "error") {
+      T(state, f.state === "done" ? "ui.state_done" : "ui.state_error");
+    } else {
+      state.textContent = f.state;
+    }
     if (f.state === "done") {
       const links = document.createElement("div");
       links.className = "flinks";
-      const mk = (href, label) => {
+      const mk = (href, key) => {
         const a = document.createElement("a");
         a.href = href;
-        a.textContent = label;
         a.download = "";
-        return a;
+        links.appendChild(a);
+        T(a, key);
       };
       const artKey = fmt === "mp3" ? "enhanced_mp3" : "enhanced_wav";
-      const artLabel = fmt === "mp3" ? "MP3 amélioré" : "WAV amélioré";
+      const artLabel = fmt === "mp3" ? "ui.link_mp3" : "ui.link_wav";
       if (f.artifacts && f.artifacts[artKey]) {
-        links.appendChild(mk(fileUrlAt(i, artKey), artLabel));
+        mk(fileUrlAt(i, artKey), artLabel);
       } else if (f.artifacts && f.artifacts.enhanced_wav) {
-        links.appendChild(mk(fileUrlAt(i, "enhanced_wav"), "WAV amélioré"));
+        mk(fileUrlAt(i, "enhanced_wav"), "ui.link_wav");
       }
-      if (f.kind === "video") links.appendChild(mk(fileUrlAt(i, "video"), "MP4"));
+      if (f.kind === "video") mk(fileUrlAt(i, "video"), "ui.link_mp4");
       if (f.artifacts && f.artifacts.transcript)
-        links.appendChild(mk(fileUrlAt(i, "transcript"), "Transcription"));
+        mk(fileUrlAt(i, "transcript"), "ui.link_transcript");
       if (f.artifacts && f.artifacts.transcript_srt)
-        links.appendChild(mk(fileUrlAt(i, "transcript_srt"), "Sous-titres"));
+        mk(fileUrlAt(i, "transcript_srt"), "ui.link_srt");
       row.appendChild(links);
     } else if (f.state === "error" && f.error) {
       const err = document.createElement("span");
       err.className = "ferr";
-      err.textContent = f.error;
       row.appendChild(err);
+      bind(err, () => errorText(f.error_code, f.error_params, f.error));
     }
     list.appendChild(row);
   }
@@ -689,18 +1145,16 @@ function renderFolderResults(job, btns) {
   if (job.zip) {
     const a = document.createElement("a");
     a.href = "/api/jobs/" + jobId + "/zip";
-    a.textContent = "Télécharger tout (ZIP)";
     a.download = "";
     a.className = "dl";
     btns.appendChild(a);
+    T(a, "ui.dl_zip");
   }
 
-  $("note").textContent =
-    (fmt === "mp3"
-      ? "Chaque fichier audio est exporté en MP3 (192 kbit/s) ; "
-      : "Chaque fichier audio est exporté en WAV 48 kHz (non compressé) ; ")
-    + "bande passante étendue par LavaSR v2 (48 kHz mono). "
-    + "Pour les vidéos, la piste vidéo est conservée telle quelle et l'audio remplacé (MP4, AAC 192 kbit/s).";
+  // la note est composée de deux morceaux selon le format : `bind` (et non `T`)
+  // pour que le changement de langue la reconstruise
+  bind($("note"), () => t(fmt === "mp3" ? "ui.note_folder_mp3" : "ui.note_folder_wav")
+    + t("ui.note_folder_tail"));
 
   $("results").scrollIntoView({ behavior: "smooth" });
 }
@@ -711,7 +1165,9 @@ go.addEventListener("click", async () => {
   go.disabled = true;
   $("errorBox").style.display = "none";
   $("results").style.display = "none";
-  showProgress(isFolder ? `Envoi du dossier (${currentFiles.length} fichiers)…` : "Envoi du fichier…", 0.03);
+  showProgress(isFolder
+    ? { key: "ui.stage_uploading_folder", args: { n: currentFiles.length } }
+    : { key: "ui.stage_uploading" }, 0.03);
 
   const fd = new FormData();
   fd.append("denoise", $("denoise").checked ? "true" : "false");
@@ -730,21 +1186,22 @@ go.addEventListener("click", async () => {
   try {
     const r = await fetch(url, { method: "POST", body: fd });
     if (!r.ok) {
-      let detail = "Erreur " + r.status;
-      try { detail = (await r.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
+      const d = await r.json().catch(() => ({}));
+      showError(d.code, d.params, d.detail);
+      return;
     }
     const data = await r.json();
     jobId = data.job_id;
     $("progressActions").classList.remove("hidden");
+    cancelling = false;
     $("cancelBtn").disabled = false;
-    $("cancelBtn").textContent = "Annuler le traitement";
+    paintCancel();
     if (data.queue_position > 0) {
-      showProgress(`En file d'attente — ${data.queue_position} traitement(s) avant celui-ci…`, 0);
+      showProgress({ key: "ui.stage_queued_n", args: { n: data.queue_position } }, 0);
     }
     pollTimer = setInterval(poll, 800);
   } catch (e) {
-    showError(e.message);
+    showError(null, null, e.message);
   }
 });
 
@@ -755,14 +1212,7 @@ $("again").addEventListener("click", () => {
   currentFile = null;
   currentFiles = [];
   jobId = null;
-  go.disabled = true;
-  go.textContent = "Améliorer l'audio";
-  dropTitle.textContent = mode === "folder"
-    ? "Glissez un dossier ici (sous-dossiers inclus)"
-    : "Glissez un fichier audio ou vidéo ici";
-  dropHint.textContent = mode === "folder"
-    ? "ou cliquez pour parcourir — tous les fichiers audio/vidéo seront détectés récursivement"
-    : "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…";
+  paintSelection();
   fileInput.value = "";
   folderInput.value = "";
   for (const id of ["origPlayer", "enhPlayer", "videoPlayer"]) {
@@ -779,52 +1229,75 @@ $("again").addEventListener("click", () => {
   $("progressActions").classList.add("hidden");
   $("deleteBtn").disabled = false;
   $("errorBox").style.display = "none";
+  $("btns").innerHTML = "";
+  $("folderList").innerHTML = "";
+  folderJob = null;
+  pruneBindings();   // les résultats précédents ne sont plus dans le document
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
-const TRANSCRIBE_DESC_OK =
-  "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)";
-const TRANSCRIBE_DESC_MISSING =
-  "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.";
-
+// ------------------------------------------------------------ transcription
 // Idempotent : ne touche jamais à `.checked` quand la transcription est
 // disponible, pour ne pas décocher ce que l'utilisateur vient de cocher ; quand
 // elle ne l'est pas, on décoche (sinon on enverrait transcribe=true).
+let asrMissing = false;
+
+function paintTranscribeRow() {
+  $("transcribe").disabled = asrMissing;
+  $("transcribeRow").classList.toggle("off", asrMissing);
+  $("transcribeDesc").textContent = t(asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
+}
+
 function setTranscribeEnabled(on) {
-  $("transcribe").disabled = !on;
-  if (!on) $("transcribe").checked = false;
-  $("transcribeRow").classList.toggle("off", !on);
-  $("transcribeDesc").textContent = on ? TRANSCRIBE_DESC_OK : TRANSCRIBE_DESC_MISSING;
+  asrMissing = !on;
+  if (asrMissing) $("transcribe").checked = false;
+  paintTranscribeRow();
+}
+
+// ------------------------------------------------------------------- statut
+let lastStatus = null;
+
+function paintBadge() {
+  if (!lastStatus) return;
+  const s = lastStatus;
+  const b = $("modelBadge");
+  b.className = "badge";
+  const st = s.transcriber || { status: "idle" };
+  // .available : false = nemo_toolkit[asr] absent (run.sh n'installe que les
+  // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
+  asrMissing = st.available === false;
+  let asr = "";
+  if (st.status === "ready") asr = t("ui.asr_ready");
+  else if (st.status === "loading") asr = t("ui.asr_loading");
+  else if (st.status === "error") asr = t("ui.asr_error");
+  else if (asrMissing) asr = t("ui.asr_missing");
+  if (s.status === "ready") {
+    b.classList.add("ready");
+    b.textContent = t("ui.badge_ready",
+      { device: t(s.device === "cuda" ? "ui.device_cuda" : "ui.device_cpu") }) + asr;
+  } else if (s.status === "error") {
+    b.classList.add("error");
+    b.textContent = t("ui.badge_model_error", { err: (s.error || "").slice(0, 60) });
+  } else {
+    b.classList.add("loading");
+    b.textContent = t("ui.badge_loading")
+      + (s.status === "idle" ? "" : t("ui.badge_first_run")) + asr;
+  }
+  paintTranscribeRow();
 }
 
 async function refreshStatus() {
   try {
     const r = await fetch("/api/status");
-    const s = await r.json();
-    const b = $("modelBadge");
-    b.className = "badge";
-    const t = s.transcriber || { status: "idle" };
-    //.available : false = nemo_toolkit[asr] absent (run.sh n'installe que les
-    // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
-    const asrMissing = t.available === false;
-    setTranscribeEnabled(!asrMissing);
-    let asr = "";
-    if (t.status === "ready") asr = " · Parakeet prêt";
-    else if (t.status === "loading") asr = " · Chargement Parakeet…";
-    else if (t.status === "error") asr = " · Parakeet en erreur";
-    else if (asrMissing) asr = " · Parakeet non installé (./run.sh --asr)";
-    if (s.status === "ready") {
-      b.classList.add("ready");
-      b.textContent = "LavaSR v2 prêt — " + (s.device === "cuda" ? "GPU (CUDA)" : "CPU") + asr;
-    } else if (s.status === "error") {
-      b.classList.add("error");
-      b.textContent = "Erreur modèle : " + (s.error || "").slice(0, 60);
-    } else {
-      b.classList.add("loading");
-      b.textContent = "Chargement du modèle…" + (s.status === "idle" ? "" : " (1er lancement : téléchargement)") + asr;
-    }
+    lastStatus = await r.json();
+    paintBadge();
   } catch (_) {}
 }
+
+// ------------------------------------------------------------------ démarrage
+setMode("file");          // écrit le libellé du dépôt dans la langue choisie
+paintCancel();
+applyLang(lang);          // appliqué après le DOM, donc sans éclair de langue
 refreshStatus();
 setInterval(refreshStatus, 2000);
 </script>

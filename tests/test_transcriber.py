@@ -1,4 +1,4 @@
-"""Découpage en tranches, sous-titres et découverte du checkpoint — sans NeMo."""
+"""Chunk planning, subtitles and checkpoint discovery — without NeMo."""
 
 import importlib.util
 import math
@@ -32,13 +32,13 @@ def test_plan_chunks_couvre_tout_sans_trou():
     assert ranges[-1][1] == frames
     for (_, e0, _, _), (s1, _, _, _) in zip(ranges, ranges[1:], strict=False):
         assert s1 <= e0, "les blocs lus doivent se chevaucher"
-    # les fenêtres gardées, elles, se touchent : ni trou, ni doublon de mots
+    # the kept windows touch each other: no gap, no duplicated word
     for (_, _, _, k1), (_, _, k0p, _) in zip(ranges, ranges[1:], strict=False):
         assert k1 == k0p
 
 
 def test_plan_chunks_ventilation_sans_doublon():
-    """Chaque échantillon du fichier tombe dans une et une seule fenêtre gardée."""
+    """Every sample of the file falls into exactly one kept window."""
     sr = 16000
     frames = int((CHUNK_SEC * 5.7) * sr)
     windows = [(k0, k1) for _, _, k0, k1 in plan_chunks(frames, sr)]
@@ -51,7 +51,7 @@ def test_plan_chunks_ventilation_sans_doublon():
 
 
 def test_plan_chunks_garde_une_fenetre_dans_le_bloc_lu():
-    """La fenêtre gardée doit tenir dans le bloc lu (chevauchement compris)."""
+    """The kept window must fit inside the chunk read (overlap included)."""
     sr = 44100
     for frames in (int(s * sr) for s in (5, 63, 130, 600)):
         for start, stop, k0, k1 in plan_chunks(frames, sr):
@@ -77,7 +77,7 @@ def test_plan_chunks_fichier_vide():
 
 
 def test_plan_chunks_exactement_une_tranche():
-    """Un fichier d'une seule tranche garde tout : pas de contexte à jeter."""
+    """A file with a single chunk keeps everything: no context to discard."""
     sr = 8000
     frames = CHUNK_SEC * sr
     assert plan_chunks(frames, sr) == [(0, frames, 0, frames)]
@@ -121,8 +121,8 @@ def test_local_nemo_path_absent(tmp_path, monkeypatch):
 # ------------------------------------------------------------- is_available
 
 def test_is_available_vrai_si_nemo_est_installe():
-    # Le poste de développement a NeMo ; l'important est que la valeur soit un
-    # booléen et non une exception si l'import est impossible plus tard.
+    # This dev machine has NeMo; what matters is that the value is a boolean
+    # rather than an exception should the import ever fail.
     assert isinstance(is_available(), bool)
 
 
@@ -145,7 +145,7 @@ def test_status_expose_available():
     assert isinstance(s["available"], bool)
 
 
-# ------------------------------------------------------------------- câblage
+# ------------------------------------------------------------------- wiring
 
 class _FakeHypothesis:
     def __init__(self, text, timestamp):
@@ -154,10 +154,10 @@ class _FakeHypothesis:
 
 
 class _FakeModel:
-    """Un mot par seconde, étiqueté `b<bloc>w<temps relatif au bloc>`.
+    """One word per second, tagged `b<chunk>w<time relative to the chunk>`.
 
-    Les horodatages de NeMo sont relatifs à l'audio passé à `transcribe` : c'est
-    exactement ce que le câblage doit retranslater, donc le test le vérifie.
+    NeMo's timestamps are relative to the audio passed to `transcribe`:
+    that is exactly what the wiring must shift back, hence this test.
     """
 
     def __init__(self, samplerate, avec_timestamps=True):
@@ -177,7 +177,7 @@ class _FakeModel:
 
 
 def _mots_absolus(transcript, ranges, samplerate):
-    """Remet chaque mot à sa place dans le fichier, d'après son étiquette."""
+    """Puts every word back in its place in the file, from its tag."""
     out = []
     for c in transcript.cues:
         for mot in c.text.split():
@@ -193,7 +193,7 @@ def _fake_transcriber(monkeypatch, model):
 
 
 def test_transcribe_chaque_mot_une_seule_fois(tmp_path, monkeypatch):
-    """Le chevauchement ne doit ni perdre ni doubler un mot (2,5 tranches)."""
+    """The overlap must neither lose nor duplicate a word (2.5 chunks)."""
     import numpy as np
     import soundfile as sf
 
@@ -208,7 +208,7 @@ def test_transcribe_chaque_mot_une_seule_fois(tmp_path, monkeypatch):
 
     t = tr.transcribe(path)
 
-    # chaque seconde du fichier a rendu un mot, à sa place, une seule fois
+    # every second of the file returned one word, in its place, exactly once
     assert _mots_absolus(t, ranges, sr) == [float(i) for i in range(dur)]
     assert t.text.split() == [f"b{b}w{w}" for b, w in _blocs_mots(ranges)]
     assert t.cues[0].start == pytest.approx(0.0)
@@ -219,7 +219,7 @@ def test_transcribe_chaque_mot_une_seule_fois(tmp_path, monkeypatch):
 
 
 def _blocs_mots(ranges, sr=16000):
-    """(bloc, position dans le fichier) de chaque mot, dans l'ordre attendu."""
+    """(chunk, position in the file) of each word, in the expected order."""
     for i, (start, _, k0, k1) in enumerate(ranges):
         for j in range(int((k0 - start) / sr), int((k1 - start) / sr)):
             yield i, j
@@ -238,20 +238,20 @@ def test_transcribe_hors_timestamps_garde_le_texte_brut(tmp_path, monkeypatch):
 
     t = tr.transcribe(path)
 
-    # sans horodatages on ne peut pas dédoublonner : le texte de chaque bloc est
-    # concaténé tel quel, chevauchement compris
+    # without timestamps there is no way to deduplicate: each chunk's text is
+    # concatenated as is, overlap included
     assert t.cues == []
     n_blocs = len(plan_chunks(dur * sr, sr))
     mots = t.text.split()
     assert mots[0] == "b0w0"
-    assert mots[CHUNK_SEC] == "b1w0"  # le 2e bloc recommence à son propre début
+    assert mots[CHUNK_SEC] == "b1w0"  # the 2nd chunk starts again at its own beginning
     assert mots[-1].startswith(f"b{n_blocs - 1}w")
 
 
 # ------------------------------------------------------------------ sous-titres
 
 def tokens(*words):
-    """Simule la sortie TDT : [[début, fin, mot], ...]."""
+    """Simulates TDT output: [[start, end, word], ...]."""
     out = []
     t = 0.0
     for w in words:
@@ -270,7 +270,7 @@ def test_fmt_ts():
     assert _fmt_ts(1.5) == "00:00:01,500"
     assert _fmt_ts(61.25) == "00:01:01,250"
     assert _fmt_ts(3661.001) == "01:01:01,001"
-    assert _fmt_ts(-3) == "00:00:00,000"  # pas d'horodatage négatif
+    assert _fmt_ts(-3) == "00:00:00,000"  # no negative timestamp
 
 
 def test_wrap_sur_les_frontieres_de_mots():
@@ -293,11 +293,11 @@ def test_to_cues_decale_le_temps_de_la_tranche():
 
 
 def test_to_cues_jette_le_chevauchement():
-    """La fenêtre [t0, t1) exclut le début de tranche, transcrit deux fois."""
+    """The [t0, t1) window excludes the chunk start, which is transcribed twice."""
     mots = [f"m{i}" for i in range(10)]  # un mot toutes les 0,4 s
     ts = tokens(*mots)
-    t0 = ts[3][0]  # début du 4e mot
-    t1 = ts[7][0]  # début du 8e mot
+    t0 = ts[3][0]  # start of the 4th word
+    t1 = ts[7][0]  # start of the 8th word
 
     gardes = to_cues(ts, 0.0, t0, t1)
 
@@ -310,7 +310,7 @@ def test_to_cues_fenetre_vide_pas_de_sous_titre():
 
 
 def test_to_cues_fenetre_decalee_les_horodatages():
-    """offset (début de tranche) et t0/t1 (temps locaux) se cumulent."""
+    """offset (chunk start) and t0/t1 (local times) add up."""
     ts = tokens("un", "deux", "trois", "quatre")
     gardes = to_cues(ts, 100.0, 0.0, ts[2][0])
     assert [c.text for c in gardes] == ["un deux"]
@@ -337,7 +337,7 @@ def test_has_timestamps():
 
 
 def test_to_cues_force_la_monotonie():
-    """L'alignement TDT peut désordonner les fins de mots : on corrige."""
+    """TDT alignment can scramble word endings: we correct for it."""
     cues = to_cues([[1.0, 2.0, "un"], [1.5, 1.2, "deux"], [3.0, 3.4, "trois"]], 0.0)
     assert all(c.end > c.start for c in cues)
     assert " ".join(c.text for c in cues) == "un deux trois"
@@ -355,23 +355,23 @@ def test_to_cues_borne_la_duree():
     cues = to_cues(tokens(*longs), 0.0, max_sec=3.0)
     assert len(cues) > 1
     for c in cues:
-        assert c.end - c.start <= 3.0 + 0.4  # tolérance : le dernier mot déborde
+        assert c.end - c.start <= 3.0 + 0.4  # tolerance: the last word overruns
 
 
-def test_to_cues_ignore_les_entrees_abses():
+def test_to_cues_ignores_missing_input():
     assert to_cues(None, 0.0) == []
     assert to_cues([], 0.0) == []
-    assert to_cues([[0.0, 1.0, ""]], 0.0) == []      # mot vide
-    assert to_cues([[0.0, 1.0]], 0.0) == []         # pas de texte
+    assert to_cues([[0.0, 1.0, ""]], 0.0) == []      # empty word
+    assert to_cues([[0.0, 1.0]], 0.0) == []         # no text
 
 
 def test_render_srt_format():
-    cues = [Cue(0.0, 2.5, "Bonjour le monde"), Cue(2.5, 5.0, "Deuxième phrase")]
+    cues = [Cue(0.0, 2.5, "Hello world"), Cue(2.5, 5.0, "Second sentence")]
     srt = render_srt(cues)
-    # chaque bloc est suivi d'une ligne vide, y compris le dernier
+    # every block is followed by a blank line, the last one included
     assert srt == (
-        "1\n00:00:00,000 --> 00:00:02,500\nBonjour le monde\n\n"
-        "2\n00:00:02,500 --> 00:00:05,000\nDeuxième phrase\n"
+        "1\n00:00:00,000 --> 00:00:02,500\nHello world\n\n"
+        "2\n00:00:02,500 --> 00:00:05,000\nSecond sentence\n"
     )
     assert srt.count("\n\n") == 1
 
@@ -389,7 +389,7 @@ def test_srt_tient_en_deux_lignes():
         assert all(len(ln) <= 42 for ln in lignes), lignes
 
 
-# ------------------------------------- structure réellement renvoyée par NeMo
+# ------------------------------------- structure actually returned by NeMo
 
 def nemo_ts(words, segments=None):
     """Reproduit hypothesis.timestamp de NeMo 3.x (dict 'word'/'segment')."""
@@ -434,11 +434,11 @@ def test_to_cues_recoupe_une_phrase_trop_longue():
 
 
 def test_to_cues_phrase_sans_mots_utilise_le_texte():
-    ts = nemo_ts([], [(0.0, 2.0, "Une phrase sans horodatage de mots.")])
-    assert [c.text for c in to_cues(ts)] == ["Une phrase sans horodatage de mots."]
+    ts = nemo_ts([], [(0.0, 2.0, "A sentence without word timestamps.")])
+    assert [c.text for c in to_cues(ts)] == ["A sentence without word timestamps."]
 
 
-def test_to_cues_segments_invalides_ignores():
+def test_to_cues_ignores_invalid_segments():
     ts = {"word": [], "segment": [{"segment": "x", "start": 2.0, "end": 1.0}]}
     assert to_cues(ts) == []
-    assert to_cues({"word": "pas une liste", "segment": None}) == []
+    assert to_cues({"word": "not a list", "segment": None}) == []

@@ -1,4 +1,4 @@
-"""Aide de l'API : chemins sûrs, progression, archive ZIP des résultats."""
+"""API helpers: safe paths, progress, ZIP archive of the results."""
 
 import json
 import time
@@ -12,7 +12,7 @@ from app import main as m
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
-    """Redirige data/jobs vers un répertoire temporaire et vide le registre."""
+    """Redirects data/jobs to a temporary directory and empties the registry."""
     d = tmp_path / "jobs"
     d.mkdir()
     monkeypatch.setattr(m, "DATA", d)
@@ -31,7 +31,7 @@ def test_relpath_simple():
 
 
 def test_relpath_ne_traverse_pas_hors_du_arborescence():
-    """Régression sécurité : un nom hostile ne doit jamais remonter la hiérarchie."""
+    """Security regression: a hostile name must never climb out of the tree."""
     for hostile in ("../../etc/passwd", "..\\..\\win.ini", "/etc/shadow",
                     "dossier/../../../x.mp3", "a/../../b.mp3"):
         rel = m._safe_relpath(hostile)
@@ -67,7 +67,7 @@ def test_stage_borne_la_progression():
 
 def test_stage_done_bascule_l_etat():
     job = {"stage": "", "progress": 0.0, "state": "running"}
-    m._stage(job, "Terminé", 1.0, done=True)
+    m._stage(job, "Done", 1.0, done=True)
     assert job["state"] == "done"
 
 
@@ -123,7 +123,7 @@ def test_zip_wav_choisit_le_bon_format(data_dir):
 
 
 def test_zip_suffixe_les_stems_en_collision(data_dir):
-    """a.mp3 et a.mkv dans le même dossier : le second devient a_2."""
+    """a.mp3 and a.mkv in the same folder: the second becomes a_2."""
     job = {"id": "c1"}
     out = data_dir / "c1" / "out"
     out.mkdir(parents=True)
@@ -159,13 +159,13 @@ def test_zip_absent_si_aucun_succes(data_dir):
 # ------------------------------------------------------------------ snapshot
 
 def test_snapshot_isole_le_job_vivant(data_dir):
-    """Régression : le worker continue de muter le job pendant l'encodage JSON.
-    Une copie superficielle ('dict(job)') fait échouer la requête."""
+    """Regression: the worker keeps mutating the job during JSON encoding. A
+    shallow copy ('dict(job)') makes the request fail."""
     job = {"id": "s1", "state": "running", "artifacts": {"enhanced_wav": "/a.wav"}}
     snap = m._snapshot(job)
     job["artifacts"]["enhanced_mp3"] = "/a.mp3"
     job["artifacts"]["enhanced_wav"] = "/b.wav"
-    # copie isolée, et seule l'information utile est exposée (le nom)
+    # isolated copy, and only the useful information is exposed (the name)
     assert snap["artifacts"] == {"enhanced_wav": "a.wav"}
 
 
@@ -190,7 +190,7 @@ def test_snapshot_isole_les_entrees_dossier(data_dir):
 
 
 def test_snapshot_cache_les_cles_internes(data_dir):
-    """Aucun Event, aucun chemin serveur ne doit fuiter vers le client."""
+    """No Event and no server path may leak to the client."""
     import threading
 
     job = {"id": "s3", "state": "queued", "artifacts": {},
@@ -209,11 +209,11 @@ def test_snapshot_reste_serialisable(data_dir):
 
     job = {"id": "s4", "state": "done", "artifacts": {"enhanced_wav": "/a.wav"},
            "files": [{"relpath": "a.mp3", "artifacts": {"video": "/a.mp4"}}]}
-    # la réponse doit rester du JSON pur
+    # the response must stay pure JSON
     assert json.loads(json.dumps(m._snapshot(job)))["files"][0]["relpath"] == "a.mp3"
 
 
-# ------------------------------------------------------------------ rétention
+# ------------------------------------------------------------------ retention
 
 def _register(data_dir, job_id, **fields):
     job = {"id": job_id, "state": "done", "stage": "", "progress": 1.0,
@@ -253,10 +253,10 @@ def test_purge_ignore_un_job_non_expire(data_dir):
 
 
 def test_purge_orphans_au_demarrage(data_dir):
-    """Après un redémarrage, plus aucun job n'est en mémoire : tout est mort."""
+    """After a restart no job is in memory any more: they are all dead."""
     (data_dir / "vieux1").mkdir()
     (data_dir / "vieux2" / "out").mkdir(parents=True)
-    (data_dir / "fichier.txt").write_text("gardé")
+    (data_dir / "fichier.txt").write_text("kept")
     assert m._purge_orphans() == 2
     assert not (data_dir / "vieux1").exists()
     assert not (data_dir / "vieux2").exists()
@@ -264,7 +264,7 @@ def test_purge_orphans_au_demarrage(data_dir):
 
 
 def test_make_room_evince_les_termines(data_dir, monkeypatch):
-    """Avant d'enregistrer un nouveau job, il faut au moins une place libre."""
+    """Before registering a new job, at least one free slot is needed."""
     monkeypatch.setattr(m, "JOB_MAX", 2)
     _register(data_dir, "v1")
     time.sleep(0.01)
@@ -272,7 +272,7 @@ def test_make_room_evince_les_termines(data_dir, monkeypatch):
     time.sleep(0.01)
     _register(data_dir, "v3")
     m._make_room()
-    assert "v1" not in m.JOBS  # les plus anciens sont évincés en premier
+    assert "v1" not in m.JOBS  # the oldest are evicted first
     assert "v2" not in m.JOBS
     assert "v3" in m.JOBS
     assert len(m.JOBS) < m.JOB_MAX  # de la place pour le prochain
@@ -299,7 +299,7 @@ def test_cancel_leve_jobcancelled():
 
     ev = threading.Event()
     raise_if_cancelled(None)       # no-op sans event
-    raise_if_cancelled(ev)         # no-op si l'event n'est pas posé
+    raise_if_cancelled(ev)         # no-op while the event is unset
     ev.set()
     with pytest.raises(JobCancelled):
         raise_if_cancelled(ev)
@@ -310,7 +310,7 @@ def test_finish_cancelled_purge_le_dossier(data_dir):
     (data_dir / "c1" / "out").mkdir(parents=True)
     m._finish_cancelled(job)
     assert job["state"] == "cancelled"
-    assert job["stage"] == "Annulé"
+    assert job["stage"] == "Cancelled"
     assert not (data_dir / "c1").exists()
 
 
@@ -319,7 +319,7 @@ def test_finish_cancelled_purge_le_dossier(data_dir):
 
 @pytest.fixture
 def small_queue(monkeypatch):
-    """File d'attente locale, sans worker (les tests n'en lancent pas)."""
+    """Local queue, no worker (no test starts one)."""
     import queue as _queue
 
     q = _queue.Queue(maxsize=2)
@@ -353,17 +353,17 @@ def test_enqueue_refuse_si_file_pleine(data_dir, small_queue):
     with pytest.raises(HTTPException) as exc:
         m._enqueue(job, lambda *a: None, ())
     assert exc.value.status_code == 429
-    # le job refusé est purgé : pas de résidu sur disque
+    # the refused job is purged: nothing left on disk
     assert "f3" not in m.JOBS
     assert not (data_dir / "f3").exists()
 
 
 def test_worker_remonte_une_erreur_inattendue(data_dir, monkeypatch):
-    """Un job qui plante hors du try/except de _run_job reste visible dans l'UI."""
+    """A job that crashes outside _run_job's try/except stays visible in the UI."""
     import threading
 
     class OneShotQueue:
-        """Sert un unique job puis envoie le sentinelle d'arrêt du worker."""
+        """Serves a single job then sends the worker's shutdown sentinel."""
 
         def __init__(self, item):
             self.item = item
@@ -379,16 +379,16 @@ def test_worker_remonte_une_erreur_inattendue(data_dir, monkeypatch):
     job = _register(data_dir, "w9", state="queued")
 
     def boom(_a):
-        raise RuntimeError("peut-être plus de VRAM")
+        raise RuntimeError("maybe out of VRAM")
 
     monkeypatch.setattr(m, "QUEUE", OneShotQueue((boom, (1,), job)))
     t = threading.Thread(target=m._worker, daemon=True)
-    t.start()  # le worker s'arrête sur la sentinelle None (voir OneShotQueue)
+    t.start()  # the worker stops on the None sentinel (see OneShotQueue)
     t.join(timeout=5)
     assert not t.is_alive()
     assert job["state"] == "error"
     assert "VRAM" in job["error"]
-    assert job["stage"] == "Erreur"
+    assert job["stage"] == "Error"
 
 
 def test_worker_laisse_passer_un_job_reussi(data_dir, monkeypatch):
@@ -413,13 +413,13 @@ def test_worker_laisse_passer_un_job_reussi(data_dir, monkeypatch):
     t.start()
     t.join(timeout=5)
     assert seen == [7]
-    assert job["state"] == "queued"  # le worker ne réécrit pas l'état du job
+    assert job["state"] == "queued"  # the worker does not rewrite the job state
 
 
 def test_cancel_refuse_un_job_termine(data_dir):
     from fastapi import HTTPException
 
-    _register(data_dir, "c9")  # état "done" par défaut
+    _register(data_dir, "c9")  # state "done" by default
     with pytest.raises(HTTPException) as exc:
         m.cancel_job("c9")
     assert exc.value.status_code == 409
@@ -482,13 +482,13 @@ def test_status_expose_file_et_retenue(data_dir):
 
 
 def test_status_donne_la_disponibilite_de_nemo(data_dir):
-    """L'interface en déduit qu'il faut désactiver la case « Transcrire »."""
+    """The UI deduces it must disable the "Transcribe" checkbox."""
     s = m.status()
     assert isinstance(s["transcriber"]["available"], bool)
 
 
 def test_transcribe_refuse_si_nemo_absent(data_dir, monkeypatch):
-    """Mieux vaut un 400 explicite qu'un job qui échoue sur ModuleNotFound."""
+    """An explicit 400 beats a job failing on ModuleNotFound."""
     from fastapi import HTTPException
 
     monkeypatch.setattr(m, "is_available", lambda: False)
@@ -496,15 +496,15 @@ def test_transcribe_refuse_si_nemo_absent(data_dir, monkeypatch):
         m._check_transcribe(True)
     assert e.value.status_code == 400
     assert "--asr" in e.value.detail
-    m._check_transcribe(False)  # inactif : toujours accepté
+    m._check_transcribe(False)  # inactive: always accepted
 
 
-# --------------------------------------------- enchaînement file -> _run_job
+# --------------------------------------------- queue -> _run_job chain
 
 
 @pytest.fixture
 def harness(monkeypatch):
-    """File locale + worker lancé par le test (aucun thread global)."""
+    """Local queue + worker started by the test (no global thread)."""
     import queue as _queue
     import threading as _th
 
@@ -519,7 +519,7 @@ def harness(monkeypatch):
         started.append(t)
 
     yield q, start
-    q.put_nowait(None)  # sentinelle d'arrêt du worker
+    q.put_nowait(None)  # the worker's shutdown sentinel
     for t in started:
         t.join(timeout=5)
 
@@ -534,8 +534,8 @@ def wait_state(job, states, timeout=10):
 
 
 def test_enqueue_puis_worker_execute_le_vrai_run_job(data_dir, harness, monkeypatch):
-    """Régression : la cible doit recevoir le job en premier argument, sinon
-    _run_job échoue sur une TypeError et le job part en erreur."""
+    """Regression: the target must receive the job as its first argument,
+    otherwise _run_job fails with a TypeError and the job errors out."""
     calls = []
 
     def fake_process_file(up, outdir, denoise, input_sr, cutoff, on_stage,
@@ -560,8 +560,8 @@ def test_enqueue_puis_worker_execute_le_vrai_run_job(data_dir, harness, monkeypa
     harness[1]()
 
     assert wait_state(job, ("done", "error")), job.get("error")
-    assert len(calls) == 1, "process_file n'a pas été appelé"
-    assert str(calls[0]["up"]) == "/tmp/entree.mp3"  # normalisé en Path
+    assert len(calls) == 1, "process_file was not called"
+    assert str(calls[0]["up"]) == "/tmp/entree.mp3"  # normalised to a Path
     assert calls[0]["cancel"] is job["_cancel"]
     assert job["state"] == "done"
     assert job["artifacts"]["enhanced_wav"].endswith("x.wav")
@@ -603,17 +603,17 @@ def test_enqueue_puis_worker_execute_le_vrai_run_folder_job(data_dir, harness, m
 
     assert wait_state(job, ("done", "error")), job.get("error")
     assert seen["srcs"] == ["/tmp/uploads/a.mp3"]
-    # en mode dossier l'original n'est pas conservé (gain disque)
+    # in folder mode the original is not kept (saves disk)
     assert seen["keep"] == [False]
     assert entries[0]["state"] == "done"
     assert job["state"] == "done"
-    assert job["zip"], "le ZIP du dossier doit être produit"
+    assert job["zip"], "the folder's ZIP must be produced"
     with zipfile.ZipFile(job["zip"]) as zf:
         assert "a_pyclean-audio.mp3" in zf.namelist()
 
 
 def test_worker_annule_un_job_en_attente(data_dir, harness):
-    """Un job annulé avant son passage dans le worker ne traite rien."""
+    """A job cancelled before the worker reaches it processes nothing."""
     entries = [{"relpath": "a.mp3", "stem": "a", "state": "queued",
                 "stage": "", "progress": 0.0, "error": None, "kind": None,
                 "artifacts": {}}]
@@ -626,7 +626,7 @@ def test_worker_annule_un_job_en_attente(data_dir, harness):
 
     assert wait_state(job, ("cancelled", "done", "error")), job["state"]
     assert job["state"] == "cancelled"
-    # les fichiers du job sont libérés (l'état est posé avant le rmtree)
+    # the job's files are released (the state is set before the rmtree)
     end = time.time() + 5
     while (data_dir / "j3").exists() and time.time() < end:
         time.sleep(0.01)
@@ -634,7 +634,7 @@ def test_worker_annule_un_job_en_attente(data_dir, harness):
 
 
 def test_snapshot_zip_est_un_bouton(data_dir):
-    """Le chemin de l'archive ne doit pas sortir du serveur."""
+    """The archive path must not leak out of the server."""
     job = {"id": "z9", "state": "done", "artifacts": {},
            "zip": "/srv/data/jobs/z9/results.zip"}
     snap = m._snapshot(job)
@@ -651,3 +651,89 @@ def test_snapshot_ignore_les_artefacts_absents(data_dir):
 
 def test_artifact_keys_couvre_les_telechargements():
     assert m.ARTIFACT_KEYS == frozenset(m.DOWNLOADS) - {"video"}
+
+
+# ------------------------------------------------------- translatable keys
+
+def test_stage_expose_la_cle_et_ses_params(data_dir):
+    """The UI translates `stage_key`/`stage_args`; `stage` stays the wording."""
+    job = {"stage": "", "progress": 0.0, "state": "running"}
+    m._stage(job, "Enhancing the audio (LavaSR v2)…", 0.5,
+             key="enhance", args={})
+    assert job["stage_key"] == "enhance"
+    assert job["stage_args"] == {}
+    assert job["stage"] == "Enhancing the audio (LavaSR v2)…"
+
+
+def test_stage_sans_cle_laisse_le_repli(data_dir):
+    """A caller that emits a text only (or an older version) stays displayable:
+    the UI then falls back to `stage`."""
+    job = {"stage": "", "progress": 0.0, "state": "running"}
+    m._stage(job, "Unknown stage…", 0.5)
+    assert job["stage_key"] is None
+    assert job["stage_args"] == {}
+
+
+def test_file_stage_emborique_l_etape_interne():
+    text, key, params = m._file_stage(2, 12, "sous/a.mp3",
+                                     "Enhancing the audio (LavaSR v2)…",
+                                     "enhance", {})
+    assert key == "file_step"
+    assert text == "File 2/12 — sous/a.mp3: Enhancing the audio (LavaSR v2)…"
+    # without inner_key the UI could not translate the nested stage
+    assert params["inner_key"] == "enhance"
+    assert params["index"] == 2 and params["total"] == 12
+
+
+def test_fail_garde_le_code_et_les_params(data_dir):
+    from app.messages import MediaError
+
+    job = _register(data_dir, "e9", state="running")
+    with m.JOBS_LOCK:
+        m._fail(job, MediaError("no_audio_track"))
+    assert job["state"] == "error"
+    assert job["error"] == "No audio track found in the file."
+    assert job["error_code"] == "no_audio_track"
+    assert job["error_params"] == {}
+    assert job["stage_key"] == "error"
+
+
+def test_fail_sans_code_laisse_le_message_brut(data_dir):
+    """A third-party exception (CUDA, a bug) has no key: the UI shows `error`
+    as is rather than losing the information."""
+    job = _register(data_dir, "e8", state="running")
+    with m.JOBS_LOCK:
+        m._fail(job, RuntimeError("maybe out of VRAM"))
+    assert job["error_code"] is None
+    assert "VRAM" in job["error"]
+
+
+def test_api_error_porte_un_code_et_un_texte():
+    err = m.ApiError(413, "file_too_large", name="a.wav")
+    assert err.status_code == 413
+    assert err.code == "file_too_large"
+    assert err.params == {"name": "a.wav"}
+    assert err.detail == "File too large (2 GB max): a.wav"
+
+
+def test_reponse_d_erreur_expose_code_et_params():
+    """FastAPI's default handler only serialises `detail`: without ours the UI
+    would have nothing to translate."""
+    from fastapi.testclient import TestClient
+
+    # without `with`: the lifespan would preload LavaSR and NeMo (no test
+    # loads a model)
+    r = TestClient(m.app).get("/api/jobs/inexistant")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["detail"] == "Job not found"
+    assert body["code"] == "job_not_found"
+    assert "params" not in body          # no parameter, hence nothing to send
+
+
+def test_reponse_d_erreur_parametree():
+    from fastapi.testclient import TestClient
+
+    r = TestClient(m.app).get("/api/jobs/inexistant/file/enhanced_wav")
+    assert r.status_code == 404
+    assert r.json()["code"] == "file_not_found"

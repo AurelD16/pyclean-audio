@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # pyclean-audio — lance le serveur web (voir README.md).
 #
-#   ./run.sh            amélioreur audio seulement (défaut, installation légère)
-#   ./run.sh --asr      installe en plus nemo_toolkit[asr] → transcription Parakeet
-#   ./run.sh --help     cette aide
+#   ./run.sh            audio enhancement only (default, light install)
+#   ./run.sh --asr      also installs nemo_toolkit[asr] → Parakeet transcription
+#   ./run.sh --help     this help
 #
-# PORT=9000 ./run.sh pour changer de port, PYCLEAN_WITH_ASR=1 équivaut à --asr.
+# PORT=9000 ./run.sh changes the port, PYCLEAN_WITH_ASR=1 is the same as --asr.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,48 +20,48 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --asr|--transcribe) WITH_ASR=1 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Option inconnue : $1 (voir ./run.sh --help)" >&2; exit 2 ;;
+    *) echo "Unknown option: $1 (see ./run.sh --help)" >&2; exit 2 ;;
   esac
   shift
 done
 if [ "${PYCLEAN_WITH_ASR:-0}" = "1" ]; then WITH_ASR=1; fi
 
-# NeMo est absent de l'installation de base : il pèse plusieurs Go et impose ses
-# propres versions de torch, on ne l'ajoute que sur demande. La détection se fait
-# avec importlib (pas d'import), donc quelques millisecondes.
+# NeMo is out of the base install: it weighs several GB and pins its own torch
+# versions, so it is only added on request. Detection uses importlib (no import),
+# hence a few milliseconds.
 asr_installed() {
   [ -x .venv/bin/python ] && .venv/bin/python -c \
     'import importlib.util as u, sys; sys.exit(0 if u.find_spec("nemo") else 1)' 2>/dev/null
 }
 
 if [ "$WITH_ASR" = "1" ] && [ -d .venv ] && ! asr_installed; then
-  echo "Transcription demandée : ajout de nemo_toolkit[asr] dans .venv…"
+  echo "Transcription requested: adding nemo_toolkit[asr] to .venv…"
   uv pip install -q "nemo_toolkit[asr]"
 fi
 
 if [ ! -d .venv ]; then
-  echo "Création de l'environnement virtuel (.venv)…"
+  echo "Creating the virtual environment (.venv)…"
   uv venv .venv
   uv pip install -q \
     "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" \
     fastapi "uvicorn[standard]" python-multipart
   if [ "$WITH_ASR" = "1" ]; then
-    echo "Ajout de nemo_toolkit[asr] pour la transcription (plus long)…"
+    echo "Adding nemo_toolkit[asr] for transcription (slower)…"
     uv pip install -q "nemo_toolkit[asr]"
   fi
 fi
 
 if asr_installed; then
-  echo "Transcription : disponible (Parakeet TDT, checkpoint ~2,4 Go téléchargé au 1er usage)."
+  echo "Transcription: available (Parakeet TDT, ~2.4 GB checkpoint downloaded on first use)."
 else
-  echo "Transcription : désactivée — ./run.sh --asr pour l'activer (téléchargement ~2,4 Go)."
+  echo "Transcription: disabled — ./run.sh --asr to enable it (~2.4 GB download)."
 fi
 
-echo "Démarrage de pyclean-audio sur http://127.0.0.1:${PORT}"
-echo "Premier lancement : le modèle est téléchargé depuis HuggingFace (une seule fois)."
+echo "Starting pyclean-audio on http://127.0.0.1:${PORT}"
+echo "First run: the model is downloaded from HuggingFace (once)."
 if [ -n "${DISPLAY:-}" ]; then
   ( sleep 3; xdg-open "http://127.0.0.1:${PORT}" >/dev/null 2>&1 || true ) &
 fi
-# --workers 1 : les jobs sont sérialisés côté application (file d'attente),
-# plusieurs workers dupliqueraient les modèles en VRAM pour rien.
+# --workers 1: jobs are serialized application-side (queue), several workers
+# would only duplicate the models in VRAM for nothing.
 exec .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "${PORT}" --workers 1

@@ -8,19 +8,19 @@ import soundfile as sf
 import torch
 import torchaudio
 
-SAMPLES_PER_SEC = 16000  # taux d'échantillonnage d'entrée du modèle
+SAMPLES_PER_SEC = 16000  # the model's input sample rate
 OUTPUT_RATE = 48000
-CHUNK_SEC = 60           # taille des morceaux pour les enregistrements longs
-OVERLAP_SEC = 2          # chevauchement pour le fondu croisé aux jonctions
-READ_MARGIN_SEC = 2.0    # marge de lecture, absorbe le support du noyau sinc
+CHUNK_SEC = 60           # block size for long recordings
+OVERLAP_SEC = 2          # overlap, crossfaded at the joins
+READ_MARGIN_SEC = 2.0    # read margin, absorbs the support of the sinc kernel
 
 
 def plan_ranges(n, chunk, step):
-    """Découpe [0, n) en blocs (début, fin) successifs chevauchés de chunk-step.
+    """Split [0, n) into successive (start, end) blocks overlapping by chunk-step.
 
-    Les blocs au-delà du premier et avant le dernier se recouvrent de `chunk - step`
-    échantillons : c'est la matière du fondu croisé. Le dernier bloc est tronqué
-    à n. Fonction pure (testée sans modèle).
+    Blocks after the first and before the last overlap by `chunk - step` samples:
+    that overlap is the crossfade material. The last block is truncated to n. Pure
+    function (tested without a model).
     """
     ranges = []
     s = 0
@@ -34,29 +34,27 @@ def plan_ranges(n, chunk, step):
 
 
 def _resample_stride(src, dst):
-    """Pas de la grille de sortie d'un rééchantillonnage torchaudio.
+    """Output grid step of a torchaudio resampling.
 
-    torchaudio applique une convolution à pas `orig_freq / gcd(orig, new)` :
-    l'échantillon de sortie j lit l'entrée autour de j × ce pas. Caler les
-    fenêtres sur un multiple de ce pas est ce qui rend le résultat identique au
-    rééchantillonnage global.
+    torchaudio runs a convolution with stride `orig_freq / gcd(orig, new)`: output
+    sample j reads the input around j × that stride. Aligning the windows on a
+    multiple of it is what makes the result identical to a global resampling.
     """
     return src // math.gcd(src, dst)
 
 
 class Stream16k:
-    """Fournit le signal d'entrée en 16 kHz mono, fenêtre par fenêtre.
+    """Provides the input signal as 16 kHz mono, window by window.
 
-    Charger le fichier entier coûtait ~2,6 Go de RAM pour la durée maximale
-    (float32 48 kHz + le rééchantillonné 16 kHz). Ici la mémoire est O(fenêtre) :
-    seule la fenêtre courante est lue, convertie puis jetée.
+    Loading the whole file used to cost ~2.6 GB of RAM at the maximum duration
+    (float32 48 kHz plus the 16 kHz resampled signal). Memory here is O(window):
+    only the current window is read, converted and dropped.
 
-    Sur l'intérieur de chaque fenêtre le résultat est **identique** au
-    rééchantillonnement global : le noyau sinc de torchaudio est une
-    convolution de support fini (19 échantillons pour 48 k -> 16 k, entièrement
-    absorbé par READ_MARGIN_SEC) et les bords de fenêtre sont calés sur sa
-    grille. Sans ce calage, un décalage d'un échantillon se ferait audible aux
-    jonctions de blocs.
+    Inside each window the result is **identical** to a global resampling:
+    torchaudio's sinc kernel is a finite-support convolution (19 samples for
+    48 k -> 16 k, entirely absorbed by READ_MARGIN_SEC) and the window edges are
+    aligned on its grid. Without that alignment a one-sample offset becomes
+    audible at the block joins.
     """
 
     def __init__(self, path, input_sr=SAMPLES_PER_SEC):
@@ -64,12 +62,12 @@ class Stream16k:
         self.src_sr = self._f.samplerate
         self.input_sr = input_sr
         self.n_src = self._f.frames
-        # pas des deux conversions successives (sr -> input_sr -> 16 kHz)
+        # steps of the two successive conversions (sr -> input_sr -> 16 kHz)
         self._s1 = _resample_stride(self.src_sr, input_sr) if self.src_sr != input_sr else 1
         self._s2 = _resample_stride(input_sr, SAMPLES_PER_SEC) if input_sr != SAMPLES_PER_SEC else 1
-        # les fenêtres de lecture sont calées sur un multiple commun aux deux
-        # grilles, sinon la seconde conversion se retrouve décalée d'un
-        # échantillon (visible uniquement pour input_sr != 16 kHz)
+        # read windows are aligned on a multiple common to both grids, otherwise
+        # the second conversion ends up shifted by one sample (only visible for
+        # input_sr != 16 kHz)
         self._align = math.lcm(self._s1, self._s2)
         self.n16 = self._to16(self.n_src)
 
@@ -83,7 +81,7 @@ class Stream16k:
         self._f.close()
 
     def _to16(self, n_src):
-        """Position/taille en 16 kHz d'un indice source — formules de torchaudio
+        """Position/length at 16 kHz of a source index — torchaudio's formulas
         (target_length = ceil(new_freq * length / orig_freq))."""
         n1 = n_src
         if self.src_sr != self.input_sr:
@@ -93,14 +91,14 @@ class Stream16k:
         return n1
 
     def read(self, start, stop):
-        """Échantillons 16 kHz [start, stop) — toujours exactement stop-start."""
+        """16 kHz samples [start, stop) — always exactly stop-start."""
         need = stop - start
         if need <= 0:
             return torch.zeros(0)
-        # Fenêtre source élargie d'une marge **des deux côtés** puis calée sur la
-        # grille : la marge de gauche est indispensable, les ~6 premiers
-        # échantillons de convolution d'un bloc lisent l'entrée qui le précède
-        # (support du noyau) et seraient faux avec un zéro de remplissage.
+        # Source window widened by a margin on **both** sides, then aligned on the
+        # grid: the left margin is essential, the first ~6 convolution samples of
+        # a block read the input that precedes it (kernel support) and would be
+        # wrong with a padding zero.
         margin = int(READ_MARGIN_SEC * self.src_sr)
         s_pad = max(0, (start * self.src_sr) // SAMPLES_PER_SEC - margin)
         s_pad -= s_pad % self._align
@@ -115,21 +113,21 @@ class Stream16k:
         if self.input_sr != SAMPLES_PER_SEC:
             t = torchaudio.functional.resample(t, self.input_sr, SAMPLES_PER_SEC)
 
-        # indice, dans le bloc, du premier échantillon demandé : la fenêtre lue
-        # commence en amont, la marge est donc consommée ici
+        # index, within the block, of the first requested sample: the window read
+        # starts earlier, so the margin is consumed here
         lo = start - self._to16(s_pad)
         out = t[0, lo:lo + need]
-        if out.numel() < need:  # fenêtre tronquée par la fin du fichier
+        if out.numel() < need:  # window truncated by the end of the file
             out = torch.nn.functional.pad(out, (0, need - out.numel()))
         return out
 
 
 @lru_cache(maxsize=8)
 def _crossfade_cached(n):
-    """Fenêtres cosinus d'égalité de puissance (w_prev² + w_out² == 1).
+    """Equal-power cosine windows (w_prev² + w_out² == 1).
 
-    Mise en cache : la taille ne dépend que du chevauchement, qui est constant.
-    Les tenseurs retournés sont partagés, ne jamais les modifier.
+    Cached: the length only depends on the overlap, which is constant. The
+    returned tensors are shared, never modify them.
     """
     t = torch.linspace(0.0, 1.0, n)
     return torch.cos(t * math.pi / 2), torch.sin(t * math.pi / 2)
@@ -181,10 +179,10 @@ class LavaEnhancer:
                     cutoff=None, on_progress=None):
         """Enhance a mono WAV (any sample rate) to 48 kHz with LavaSR v2.
 
-        Les signaux plus longs que CHUNK_SEC sont traités par morceaux avec
-        chevauchement et fondu croisé (equal-power) pour éviter tout saut
-        audible aux jonctions. L'entrée est lue par fenêtres : la mémoire reste
-        proportionnelle à un bloc, pas à la durée du fichier.
+        Signals longer than CHUNK_SEC are processed block by block with an
+        overlap and an equal-power crossfade, so no jump is audible at the
+        joins. The input is read window by window: memory stays proportional to
+        one block, not to the file length.
         """
         from LavaSR.enhancer.linkwitz_merge import FastLRMerge
 
@@ -198,15 +196,15 @@ class LavaEnhancer:
             chunk = CHUNK_SEC * SAMPLES_PER_SEC
             ov = OVERLAP_SEC * SAMPLES_PER_SEC
             step = chunk - ov
-            ov48 = 3 * ov  # facteur 3 entre 16 kHz et 48 kHz
+            ov48 = 3 * ov  # factor 3 between 16 kHz and 48 kHz
 
             ranges = plan_ranges(reader.n16, chunk, step)
 
             writer = sf.SoundFile(str(out_path), "w",
                                   samplerate=OUTPUT_RATE, channels=1, subtype="PCM_16")
-            carry = None  # (tail: dernier ov48 échantillons du bloc précédent)
+            carry = None  # (tail: the last ov48 samples of the previous block)
             for i, (s, e) in enumerate(ranges):
-                # unsqueeze : le vocos attend [batch, temps], pas un vecteur
+                # unsqueeze: vocos expects [batch, time], not a 1-D vector
                 out_i = self._enhance_chunk(model, reader.read(s, e).unsqueeze(0), denoise)
                 expected = 3 * (e - s)
                 if out_i.numel() < expected:
@@ -243,7 +241,7 @@ class LavaEnhancer:
         c = chunk_16k.to(model.device)
         with torch.inference_mode():
             out = model.enhance(c, denoise=denoise, batch=False)
-        # un seul transfert vers le CPU (le numpy aller-retour coûtait deux)
+        # a single transfer to the CPU (the numpy round-trip cost two)
         return out.reshape(-1).float().cpu()
 
     @staticmethod
@@ -252,8 +250,8 @@ class LavaEnhancer:
 
     @staticmethod
     def _to_int16(x):
-        # Copie explicite : np.clip écrit en place et le bloc de fondu est
-        # réutilisé au bloc suivant — on ne doit pas muter le tenseur appelant.
+        # Explicit copy: np.clip writes in place and the crossfade block is
+        # reused by the next block — the caller's tensor must not be mutated.
         a = np.array(x.cpu().numpy(), dtype=np.float32, copy=True)
         np.clip(a, -1.0, 1.0, out=a)
         a *= 32767.0

@@ -1,8 +1,8 @@
-"""Lecture fenêtrée 16 kHz — équivalence avec le rééchantillonnage global.
+"""Windowed 16 kHz reading — equivalence with global resampling.
 
-C'est le test de non-régression du refactoring mémoire : charger tout le fichier
-d'un coup donnait le signal de référence, la lecture par fenêtres doit rendre
-exactement le même résultat.
+This is the non-regression test of the memory refactoring: loading the whole
+file in one go gives the reference signal, windowed reading must return exactly
+the same result.
 """
 
 import numpy as np
@@ -26,7 +26,7 @@ STEP = CHUNK - OV
 
 
 def global_16k(path, input_sr=16000):
-    """Référence : l'ancienne méthode, tout le fichier d'un coup."""
+    """Reference: the old method, the whole file in one go."""
     x, sr = sf.read(str(path), dtype="float32", always_2d=True)
     t = torch.from_numpy(np.ascontiguousarray(x.mean(axis=1))).unsqueeze(0)
     if sr != input_sr:
@@ -40,7 +40,7 @@ def write_wav(path, seconds, rate=48000, seed=0):
     rng = np.random.default_rng(seed)
     n = int(seconds * rate)
     t = np.arange(n) / rate
-    # mélange de tons : sensible à tout décalage de phase
+    # mix of tones: sensitive to any phase shift
     x = (0.4 * np.sin(2 * np.pi * 440 * t) + 0.3 * np.sin(2 * np.pi * 1310 * t)
          + 0.05 * rng.standard_normal(n)).astype(np.float32)
     sf.write(str(path), x, rate, subtype="PCM_16")
@@ -58,24 +58,24 @@ def test_stride_de_rechantillonnage():
 @pytest.mark.parametrize("seconds", [1.0, 2.5, 3.7])
 @pytest.mark.parametrize("input_sr", [16000, 8000, 24000])
 def test_longueur_totale_exacte(tmp_path, seconds, input_sr):
-    """La longueur annoncée doit être celle du rééchantillonnage global."""
+    """The reported length must be the one of the global resampling."""
     p = write_wav(tmp_path / f"a{seconds}_{input_sr}.wav", seconds)
     with Stream16k(p, input_sr) as rd:
         assert rd.n16 == global_16k(p, input_sr).numel()
 
 
 def test_lecture_fenetree_identique_au_global(tmp_path):
-    """Le cœur du refactoring : même signal, fenêtre par fenêtre."""
+    """The heart of the refactoring: same signal, window by window."""
     p = write_wav(tmp_path / "b.wav", 3.0, seed=1)
     ref = global_16k(p)
     with Stream16k(p) as rd:
         assert rd.n16 == ref.numel()
-        # une seule fenêtre couvrant tout : aucune jonction, doit être exact
+        # a single window covering everything: no join, must be exact
         assert torch.equal(rd.read(0, rd.n16), ref)
 
 
 def test_lecture_fenetree_egale_au_global_aux_jonctions(tmp_path):
-    """Signal de 4 min 7 : les fenêtres sont calées comme le découpage réel en
+    """4 min 7 s signal: the windows are aligned like the real chunking in
     blocs de 60 s (recouvrements de 2 s), donc traversant 3 blocs."""
     p = write_wav(tmp_path / "c.wav", 4 * 60 + 7.0, seed=2)
     ref = global_16k(p)
@@ -85,9 +85,9 @@ def test_lecture_fenetree_egale_au_global_aux_jonctions(tmp_path):
         blocks = [rd.read(s, e) for s, e in ranges]
     for (s, e), block in zip(ranges, blocks, strict=True):
         assert block.numel() == e - s
-        assert torch.equal(block, ref[s:e]), f"bloc [{s},{e}) différent du global"
-    # les zones de recouvrement vues par deux blocs consécutifs concordent :
-    # c'est ce qui garantit un fondu propre (aucun décalage entre les blocs)
+        assert torch.equal(block, ref[s:e]), f"block [{s},{e}) differs from the global read"
+    # the overlap zones seen by two consecutive blocks agree:
+    # that is what guarantees a clean crossfade (no shift between blocks)
     for (s0, e0), (s1, _) in zip(ranges, ranges[1:], strict=False):
         assert e0 - s1 == OV
         assert torch.equal(blocks[ranges.index((s0, e0))][e0 - s0 - OV:],
@@ -95,7 +95,7 @@ def test_lecture_fenetree_egale_au_global_aux_jonctions(tmp_path):
 
 
 def test_lecture_aux_bords_de_fenetre(tmp_path):
-    """Des lectures qui commencent/finissent n'importe où restent exactes."""
+    """Reads that start/end anywhere stay exact."""
     p = write_wav(tmp_path / "d.wav", 2.0, seed=3)
     ref = global_16k(p)
     with Stream16k(p) as rd:
@@ -114,12 +114,12 @@ def test_entrees_non_defaut(tmp_path, input_sr):
     with Stream16k(p, input_sr) as rd:
         assert rd.n16 == ref.numel()
         for start, stop in [(0, 5000), (5000, 15000), (15000, rd.n16)]:
-            # le résultat est bit-à-bit identique, y compris pour input_sr != 16 kHz
+            # the result is bit-for-bit identical, including for input_sr != 16 kHz
             assert torch.equal(rd.read(start, stop), ref[start:stop])
 
 
 def test_source_multicanale(tmp_path):
-    """Le pipeline produit du mono, mais la lecture doit moyenner les canaux."""
+    """The pipeline produces mono, but reading must average the channels."""
     p = tmp_path / "st.wav"
     n = 48000
     t = np.arange(n) / 48000
@@ -133,7 +133,7 @@ def test_source_multicanale(tmp_path):
 
 
 def test_taux_non_48k(tmp_path):
-    """Un WAV 44,1 kHz reste gérable (longueur exacte)."""
+    """A 44.1 kHz WAV stays manageable (exact length)."""
     p = tmp_path / "cd.wav"
     n = 44100
     t = np.arange(n) / 44100

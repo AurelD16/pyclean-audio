@@ -1,13 +1,13 @@
-# Linter uniquement : le code n'est pas formaté automatiquement (`ruff format`
-# rejouerait tout le diff historique ; c'est `ruff check` qui fait foi).
+# Lint only: the code is not auto-formatted (`ruff format` would rewrite the
+# whole historical diff; `ruff check` is what counts).
 line-length = 100
 target-version = "py311"
 
 [lint]
 select = ["E", "F", "I", "W", "B", "UP"]
 ignore = [
-  "E501",    # la longueur est gérée au cas par cas, pas automatiquement
-  "B008",    # FastAPI : appels dans les valeurs par défaut (File(...), Form(...))
+  "E501",    # line length is handled case by case, not automatically
+  "B008",    # FastAPI: calls in default values (File(...), Form(...))
 ]
 
 [lint.per-file-ignores]

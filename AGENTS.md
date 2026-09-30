@@ -1,362 +1,436 @@
 # AGENTS.md — pyclean-audio
 
-Application web locale (FastAPI + page unique) qui améliore l'audio des fichiers
-audio/vidéo avec LavaSR v2 (`LavaEnhance2`, modèle HF `YatharthS/LavaSR`).
+Local web app (FastAPI + single page) that restores the audio of audio/video
+files with LavaSR v2 (`LavaEnhance2`, HF model `YatharthS/LavaSR`). It can also
+transcribe the cleaned audio (Parakeet TDT via NeMo, optional).
 
-## Commandes
+## Commands
 
 ```bash
-# environnement (une fois) — c'est ce que fait run.sh
+# environment (once) — this is what run.sh does
 uv venv .venv
 uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi "uvicorn[standard]" python-multipart
-# supplémentaire pour --transcribe / case « Transcrire » : ./run.sh --asr
-# (ou : uv pip install "nemo_toolkit[asr]", ou -r requirements.txt)
-# NeMo est volontairement hors installation de base : plusieurs Go, et il impose
-# sa version de torch. --asr l'ajoute à un .venv existant, sans le recréer.
+# extra for --transcribe / the "Transcribe" checkbox: ./run.sh --asr
+# (or: uv pip install "nemo_toolkit[asr]", or -r requirements.txt)
+# NeMo is deliberately out of the base install: several Go, and it pins its own
+# torch version. --asr adds it to an existing .venv without recreating it.
 
-# serveur web (port 8787)
+# web server (port 8787)
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
-# ou : ./run.sh            (crée .venv et installe les 4 paquets de base)
-#     ./run.sh --asr       (idempotent : n'installe NeMo que s'il manque)
+# or: ./run.sh            (creates .venv, installs the 4 base packages)
+#     ./run.sh --asr       (idempotent: installs NeMo only if missing)
 #     ./run.sh --help
+# run.sh also honours PORT=9000 and PYCLEAN_WITH_ASR=1 (same as --asr), and
+# pins --workers 1 on purpose: jobs are serialized in-process, several workers
+# would only duplicate the models in VRAM.
 
 # CLI
-.venv/bin/python -m app.cli FICHIER [--denoise] [--transcribe] [--input-sr 8000|16000|24000] [--cutoff Hz] [--format wav|mp3] [-o OUTDIR]
-.venv/bin/python -m app.cli DOSSIER ...   # récursif ; sortie par défaut <DOSSIER>_pyclean-audio à côté (arbre mimé)
+.venv/bin/python -m app.cli FILE [--denoise] [--transcribe] [--input-sr 8000|16000|24000] [--cutoff Hz] [--format wav|mp3] [-o OUTDIR]
+.venv/bin/python -m app.cli DIR ...   # recursive; default output is <DIR>_pyclean-audio next to it (mirrored tree)
 
-# tests et lint
+# tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # 134 tests, ~6 s, aucun modèle chargé
-.venv/bin/python -m ruff check .      # seul `ruff check` fait foi (pas de ruff format)
+.venv/bin/python -m pytest            # 208 tests, ~6 s, no model loaded
+.venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
 ```
 
-Aucun **modèle** n'est chargé par les tests : ni poids LavaSR, ni NeMo. Le seul
-module lourd importé est `torch`/`torchaudio`, par `tests/test_stream.py` (qui
-vérifie l'équivalence bit à bit du rééchantillonnage) et donc par
-`app/enhancer.py`. Les tests de pipeline passent par `app.enhancer` /
-`app.transcriber` **factices** : `processor` fait ses imports *dans* le corps de
-`process_file`, `tests/conftest.py` injecte les doublures dans `sys.modules`.
-Les tests de `probe`/`process_file` sont ignorés si `ffmpeg`/`ffprobe` ne sont
-pas dans le PATH (`requires_ffmpeg`) ; `run_ffmpeg` est testé avec un faux
-`ffmpeg` (script shell) pour provoquer erreurs, blocage et annulation.
-La validation du comportement réel (qualité audio, VRAM) se fait par
-exécution, voir « Tests rapides » plus bas.
+No **model** is loaded by the tests: no LavaSR weights, no NeMo. What *is*
+imported is torch/numpy/soundfile — nearly every test module imports `app.main`
+(or `app.enhancer` / `app.transcriber`) transitively, so the suite pays for
+`import torch` (~1 s per test file) even though nothing is downloaded. `nemo`
+and `LavaSR` are only imported *inside* functions, which is why the pipeline
+tests can run with fake `app.enhancer` / `app.transcriber` modules injected in
+`sys.modules` (`tests/conftest.py`); `processor` does its own imports in the body
+of `process_file`. The `probe`/`process_file` tests are skipped when `ffmpeg` /
+`ffprobe` are not in the PATH (`requires_ffmpeg`); `run_ffmpeg` is tested with a
+fake `ffmpeg` (shell script) to force errors, hangs and cancellation. Real
+behaviour (audio quality, VRAM) is validated by running the commands below.
 
 ## Architecture
 
-- `app/enhancer.py` — wrapper du modèle (singleton, verrou d'inférence,
-  lazy-load + preload au démarrage) **et lecture fenêtrée** : `Stream16k`
-  convertit l'entrée en 16 kHz fenêtre par fenêtre. **C'est ici que vit le
-  découpage** : blocs de 60 s à 16 kHz, chevauchement 2 s, fondu croisé
-  cosinus égalité de puissance, écriture WAV séquentielle (mémoire O(fenêtre),
-  ~40 Mo quelle que soit la durée du fichier). `plan_ranges()` est une fonction
-  pure testée sans modèle.
-  - `Stream16k` est **bit-à-bit équivalent** au rééchantillonnement global de
-    tout le fichier, à deux conditions à ne pas casser : (a) le début de
-    fenêtre est calé sur un multiple de `lcm` des pas de convolution des
-    éventuels deux rééchantillonnages (`_resample_stride`), sinon un décalage
-    d'un échantillon s'entend aux jonctions ; (b) la marge de lecture
-    (`READ_MARGIN_SEC`) est **des deux côtés**, sinon les ~6 premiers
-    échantillons de chaque fenêtre lisent un zéro de remplissage au lieu du
-    signal. `tests/test_stream.py` verrouille cette équivalence.
-- `app/processor.py` — pipeline ffmpeg : décodage mono 48 kHz, extraction de
-  piste audio (vidéos), remontage vidéo (`-c:v copy`, audio AAC 192 k),
-  encodage MP3 (libmp3lame 192 k) ; `process_file(..., output_format="wav")`
-  produit en plus un `<stem>_pyclean-audio.mp3` si `output_format="mp3"` (toujours
-  accompagné du WAV, même pour les vidéos) ; `ALLOWED_EXT` +
-  `iter_media_files()` (énumération récursive partagée entre CLI et API).
-  - `run_ffmpeg` : stderr va dans un **fichier temporaire**, jamais dans un
-    pipe (un pipe non drainé bloque ffmpeg à 64 Ko et suspend le job) ; le
-    processus est lancé en `start_new_session` et tué **par groupe**
-    (`_kill`), sinon un petit-enfant survit et le tube stdout ne se ferme
-    jamais ; `timeout` optionnel (chien de garde). Si le callback de
-    progression lève (annulation), ffmpeg est tué avant de remonter.
-  - `MAX_DURATION` est vérifié dès `probe()` : un fichier trop long est rejeté
-    en quelques secondes, avant toute inférence.
-- `app/main.py` — API : `POST /api/enhance` (upload 1 fichier ; produit
-  toujours WAV **et** MP3 pour proposer les deux téléchargements),
-  `POST /api/enhance_folder` (upload d'un dossier, fichiers envoyés avec
-  leur chemin relatif multipart, paramètre `output_format` "mp3" (défaut)
-  ou "wav" qui pilote l'artefact audio et le ZIP), `GET /api/jobs/{id}`,
+The whole repository is in English: this file, README.md, the code (comments,
+docstrings, CLI and API wording). The **French only lives in the UI
+translations** (`static/index.html`) and in one product string, the transcript
+placeholder `(aucune parole détectée)`. Write new comments and messages in
+English.
+
+- `app/enhancer.py` — model wrapper (singleton, inference lock, lazy load +
+  preload at startup) **and windowed reading**: `Stream16k` converts the input
+  to 16 kHz window by window. **The chunking lives here**: 60 s blocks at
+  16 kHz, 2 s overlap, equal-power cosine crossfade, sequential WAV writing
+  (O(window) memory, ~40 MB whatever the file length). `plan_ranges()` is a pure
+  function, tested without a model.
+  - `Stream16k` is **bit-for-bit equivalent** to resampling the whole file, under
+    two conditions that must not break: (a) the window start is aligned on a
+    multiple of the `lcm` of the convolution steps of the two possible
+    resamplings (`_resample_stride`), otherwise a one-sample offset is audible
+    at the joins; (b) the read margin (`READ_MARGIN_SEC`) must be on **both**
+    sides, otherwise the first ~6 samples of each window read a padding zero
+    instead of the signal. `tests/test_stream.py` locks that equivalence in.
+- `app/processor.py` — ffmpeg pipeline: decode to mono 48 kHz, audio track
+  extraction (videos), video remux (`-c:v copy`, AAC 192 k audio), MP3 encoding
+  (libmp3lame 192 k); `process_file(..., output_format="wav")` also writes a
+  `<stem>_pyclean-audio.mp3` when `output_format="mp3"` (always accompanied by
+  the WAV, videos included); `ALLOWED_EXT` + `iter_media_files()` (recursive
+  enumeration shared by the CLI and the API).
+  - `run_ffmpeg`: stderr goes to a **temporary file**, never to a pipe (an
+    undrained pipe blocks ffmpeg at 64 KB and hangs the job); the process is
+    started with `start_new_session` and killed **by process group** (`_kill`),
+    otherwise a grandchild survives and the stdout pipe never closes; optional
+    `timeout` (watchdog). If the progress callback raises (cancellation), ffmpeg
+    is killed before the error propagates.
+  - `MAX_DURATION` is checked as soon as `probe()` returns: an over-long file is
+    rejected within seconds, before any inference.
+  - `on_stage` takes **four** arguments: `(text, progress, key, params)`. The
+    text is English (CLI, `job["stage"]`, the UI's fallback), the key and its
+    params are what the UI translates (`stage_key`/`stage_args`) —
+    `process_file` never emits a hardcoded string (`emit("enhance", 0.12)`),
+    otherwise one progress line would stay in a single language. The last two
+    arguments are optional: an older caller, or a test, can stick to
+    `lambda stage, prog: …`.
+  - user-visible failures are `MediaError(code, **params)` (`app/messages.py`),
+    not `RuntimeError` with a free-form message: `str(e)` is the English
+    wording, but the UI can translate the `code`.
+- `app/main.py` — API: `POST /api/enhance` (single-file upload; always produces
+  WAV **and** MP3 so both downloads can be offered),
+  `POST /api/enhance_folder` (folder upload, files sent with their multipart
+  relative path, `output_format` parameter "mp3" (default) or "wav" driving the
+  audio artifact and the ZIP), `GET /api/jobs/{id}`,
   `POST /api/jobs/{id}/cancel`, `DELETE /api/jobs/{id}`,
   `GET /api/jobs/{id}/file/{original_wav|enhanced_wav|enhanced_mp3|video|transcript|transcript_srt}`,
-  `GET /api/jobs/{id}/file/{index}/{...}` (job dossier),
-  `GET /api/jobs/{id}/zip` (archive des résultats, job dossier),
-  `GET /api/status` (état du modèle LavaSR + `transcriber` + `queue` +
-  `retention`). Les deux endpoints acceptent `transcribe` (bool, défaut
-  false) qui produit un artefact `transcript` (`<stem>_transcript.txt`, avec
-  `(aucune parole détectée)` si rien n'est reconnu) et `transcript_srt`
-  (`<stem>_pyclean-audio.srt`) **seulement si le modèle a renvoyé des
-  horodatages** ; tous les deux sont inclus dans le ZIP quand ils existent.
-  - **Noms servis ≠ noms sur disque** : `DOWNLOADS` renomme au téléchargement
-    (original → `{stem}.wav`, amélioré → `{stem}_pyclean-audio.wav|.mp3`),
-    et `_build_folder_zip` écrit le SRT en `{stem}.srt` (sans le suffixe
-    `_pyclean-audio`). Les collisions de stem dans un même sous-dossier sont
-    suffixées `_2`, `_3`… à la fois pour le dossier de sortie et pour le ZIP.
-  - **Assainissement des noms** : `_safe_relpath()` supprime `..` et les
-    chemins absolus des noms multipart ; le nom de l'upload en mode fichier est
-    réduit à `[A-Za-z0-9._-]` et à 80 caractères, mais `job["stem"]` (donc les
-    noms de téléchargement) garde le nom d'origine. `_save_upload()` écrit par
-    1 Mo, compte un budget **partagé** entre les fichiers d'un même envoi et
-    ignore un fichier vide (mode dossier) au lieu d'échouer.
-  - **File d'attente** : un `queue.Queue` borné (`PYCLEAN_QUEUE_MAX`) et un
-    **unique** thread worker. La cible reçoit le job en **premier argument**
-    (`_enqueue` le rajoute) — sinon `_run_job`/`_run_folder_job` échoue. Le
-    `queue_position` renvoyé est un instantané pris à l'envoi, jamais recalculé.
-    `_worker` rattrape les exceptions pour qu'un job en échec ne disparaisse
-    pas de l'interface (`state="error"`).
-  - **Rétention** : `_purge_expired()` (tâche asyncio du `lifespan`) supprime
-    les jobs terminés au bout de `PYCLEAN_JOB_TTL` ; `_purge_orphans()` vide
-    `data/jobs/` au démarrage (les jobs sont en mémoire, tout le reste est
-    injoignable) ; `_make_room()` évince les jobs terminés les plus anciens si
-    `PYCLEAN_JOB_MAX` est atteint, et ne renvoie 503 que si tout est actif.
-  - **Transcription indisponible** : `_check_transcribe()` renvoie **400** si
-    `transcribe` est demandé alors que NeMo n'est pas installé (`is_available()`),
-    au lieu d'accepter un job qui échouerait en cours de route sur un
-    `ModuleNotFoundError: nemo`. L'interface s'en sert aussi pour désactiver la
-    case avant l'envoi.
-  - `GET /api/jobs/{id}` renvoie `_snapshot(job)` : copie **profonde** des
-    `artifacts`, car le thread de traitement les mute pendant l'encodage JSON
-    (« dictionary changed size during iteration »). Les clés `_`-prefixées et
-    les chemins serveur ne sont jamais exposés (les artefacts sont réduits à
-    leur nom de fichier, `zip` à un booléen).
-  - Un job « dossier » a `kind="folder"` et une liste `files[]` (état,
-    artefacts et progression par fichier) ; les fichiers sont traités
-    séquentiellement, les chemins source/sortie sont passés **hors** du dict
-    d'entrée (liste `sources` parallèle). `keep_original=False` : l'A/B n'existe
-    pas en mode dossier, le WAV 48 kHz d'origine est supprimé (−43 % de
-    disque).
-- `app/cancel.py` — `JobCancelled` + `raise_if_cancelled()` (points de contrôle
-  entre blocs, entre tranches, à chaque ligne de progression) et **`GPU_LOCK`**,
-  verrou global pris autour d'`enhance_wav` **et** de la transcription : les
-  verrous par modèle ne suffisent pas. Aujourd'hui, le worker unique de
-  `main.py` sérialise déjà les jobs, donc ce verrou n'est jamais disputé — il
-  reste le filet de sécurité pour qui appellerait `process_file` directement
-  (script, test) : sans lui, l'amélioration et la transcription pourraient se
- superposer et les deux modèles résident en même temps sur les 8 Go.
-- `app/config.py` — toutes les bornes et la rétention, lues dans l'environnement
-  (voir tableau « Configuration » dans README.md) ; une valeur illisible ou
-  nulle retombe sur le défaut.
-- `app/transcriber.py` — wrapper du modèle de transcription Parakeet TDT
-  (`nvidia/parakeet-tdt-0.6b-v3`, checkpoint NeMo chargé via
-  `nemo.collections.asr.models.ASRModel.restore_from` sur le `.nemo` du
-  cache HuggingFace local, téléchargé si absent ; `half()` sur CUDA).
-  Singleton + verrou comme `enhancer.py` (VRAM partagée), lazy-load,
-  `transcribe(wav) -> Transcript`. Le import `nemo` reste dans `_load()` (lourd).
-  `is_available()` (fonction libre) répond à « NeMo est-il installé ? » par
-  `importlib.util.find_spec` — pas d'import, donc quasi gratuit même appelé à
-  chaque `GET /api/status` (l'interface rafraîchit toutes les 2 s) ; le résultat
-  est publié dans `status()["available"]` et consommé par `_check_transcribe()`
-  (`app/main.py`) et par la case à cocher de l'interface.
-  **C'est ici que vit le découpage** : blocs de `CHUNK_SEC = 30` s
-  chevauchés de `OVERLAP_SEC = 10` s, lus en streaming sur un seul
-  `sf.SoundFile` (`seek`), rééchantillonnés à 16 kHz par bloc,
-  `model.transcribe([arr_numpy], return_hypotheses=True, num_workers=0,
-  timestamps=True)`, progression émise par bloc. `plan_chunks()` rend quatre
-  bornes par bloc
-  `(début_lu, fin_lue, début_gardé, fin_gardée)` : le début d'un blob est la
-  zone où Parakeet se trompe le plus, on ne le prend pas dans le bloc courant
-  (il l'a déjà été en fin de bloc précédent) ; les fenêtres gardées pavent
-  `[0, frames)` sans trou **ni doublon**. `to_cues(ts, offset, t0, t1)` applique
-  la fenêtre — `t0`/`t1` sont **relatifs au bloc lu**, qui commence
-  `OVERLAP_SEC` avant la fenêtre gardée, et `offset` le retranslate en temps de
-  fichier. Le texte `.txt` est bâti sur les mêmes mots que les sous-titres
-  (retour au texte brut du modèle s'il n'y a pas d'horodatages).
-  `timestamps=True` remplit `hypothesis.timestamp` (dict `word` / `segment`) :
-  `to_cues()` en tire des sous-titres lisibles (phrases si le modèle en
-  donne, sinon regroupement de mots ; temps forcés croissants, l'alignement TDT
-  n'est pas monotone) et `render_srt()` produit le `.srt`.
-- `app/cli.py` — interface en ligne de commande (réutilise `processor`) ;
-  accepte un fichier OU un dossier (récursif, continue sur erreur,
-  récapitulatif final) ; `--format wav|mp3` (défaut : wav) ;
-  `--transcribe` (défaut : désactivé) ajoute `<stem>_transcript.txt` et
-  `<stem>_pyclean-audio.srt`.
-- `static/index.html` — interface (glisser-déposer fichier ou dossier —
-  lecture récursive via `webkitGetAsEntry` / `webkitdirectory` — A/B **lié**
-  (les deux lecteurs se suivent sur play/pause/seek, boutons « ▶ Origine » /
-  « ▶ Amélioré », case « lié »), case « Transcrire l'audio nettoyé » (défaut :
-  décochée, **désactivée avec la commande `./run.sh --asr` si NeMo manque** —
-  `setTranscribeEnabled()` sur le même `available` que l'API), position dans la
-  file d'attente, bouton « Annuler le traitement », bouton
-  « Supprimer les résultats », polling du job, liste des résultats par
-  fichier + téléchargement ZIP).
-- `tests/` — pytest (aucun modèle chargé : `app.enhancer` / `app.transcriber`
-  sont remplacés par des modules factices dans `conftest.py`) ; `ruff check`
-  est le seul lint qui fait foi.
+  `GET /api/jobs/{id}/file/{index}/{...}` (folder job),
+  `GET /api/jobs/{id}/zip` (results archive, folder job),
+  `GET /api/status` (LavaSR model state + `transcriber` + `queue` +
+  `retention`). Both endpoints accept `transcribe` (bool, default false), which
+  produces a `transcript` artifact (`<stem>_transcript.txt`, with
+  `(aucune parole détectée)` when nothing is recognised) and `transcript_srt`
+  (`<stem>_pyclean-audio.srt`) **only if the model returned timestamps**; both
+  are included in the ZIP when they exist.
+  - **Served names ≠ on-disk names**: `DOWNLOADS` renames on download
+    (original → `{stem}.wav`, enhanced → `{stem}_pyclean-audio.wav|.mp3`), and
+    `_build_folder_zip` writes the SRT as `{stem}.srt` (without the
+    `_pyclean-audio` suffix). Stem collisions inside one subfolder are suffixed
+    `_2`, `_3`… both for the output folder and for the ZIP.
+  - **Name sanitising**: `_safe_relpath()` strips `..` and absolute paths from
+    multipart names; in single-file mode the upload name is additionally reduced
+    to `[A-Za-z0-9._-]` and 80 chars (regex in `enhance()`), while `job["stem"]`
+    — hence the download names — keeps the original name. `_save_upload()` writes
+    in 1 MB chunks, accounts a **shared** budget across the files of one request,
+    and skips an empty file (folder mode) instead of failing.
+  - **Queue**: a bounded `queue.Queue` (`PYCLEAN_QUEUE_MAX`) and a **single**
+    worker thread. The target receives the job as its **first** argument
+    (`_enqueue` prepends it) — otherwise `_run_job`/`_run_folder_job` fails. The
+    returned `queue_position` is a snapshot taken at submission, never
+    recomputed. `_worker` catches exceptions so a failed job does not vanish
+    from the UI (`state="error"`).
+  - **Retention**: `_purge_expired()` (asyncio task of the `lifespan`) deletes
+    finished jobs after `PYCLEAN_JOB_TTL`; `_purge_orphans()` empties
+    `data/jobs/` at startup (jobs live in memory, anything else is
+    unreachable); `_make_room()` evicts the oldest finished jobs when
+    `PYCLEAN_JOB_MAX` is reached, and returns 503 only if everything is active.
+  - **Transcription unavailable**: `_check_transcribe()` returns **400** if
+    `transcribe` is requested while NeMo is not installed (`is_available()`),
+    instead of accepting a job that would fail mid-flight with
+    `ModuleNotFoundError: nemo`. The UI uses the same signal to disable the
+    checkbox before submitting.
+  - **Translatable keys**: every job and every folder entry carries
+    `stage_key` / `stage_args` (plus `error_code` / `error_params` on failure)
+    next to the English `stage` / `error` text, see `app/messages.py`. A folder
+    job nests the current file's stage in
+    `stage_args = {index, total, name, inner_key, inner_args}` (`_file_stage`),
+    otherwise the “File 2/12 — a.mp3: …” line would stay half in French.
+    `_stage` takes the lock, `_stage_locked` must be called **under**
+    `JOBS_LOCK` (`_run_folder_job` already holds it: calling it from an
+    already-locked closure deadlocks); `_fail(job, exc)` writes the error and its
+    key in one go.
+  - **HTTP errors**: `ApiError(status, code, **params)` (an `HTTPException`
+    subclass) carries `code`/`params`; the `_api_error_handler` adds them to the
+    body (`{"detail", "code", "params"}`) because FastAPI's default handler
+    only serialises `detail`. Never match on the wording of a `detail` to decide
+    a behaviour (the old `if "vide" in str(e.detail)` is now
+    `if e.code == "empty_file"`).
+  - `GET /api/jobs/{id}` returns `_snapshot(job)`: a **deep** copy of the
+    `artifacts`, because the worker thread keeps mutating them while FastAPI
+    encodes the response (“dictionary changed size during iteration”).
+    `_`-prefixed keys and server paths are never exposed (artifacts are reduced
+    to their file name, `zip` to a boolean).
+  - A folder job has `kind="folder"` and a `files[]` list (state, artifacts and
+    progress per file); files are processed sequentially and the source/output
+    paths are passed **outside** the entry dict (parallel `sources` list).
+    `keep_original=False`: there is no A/B in folder mode, so the original
+    48 kHz WAV is deleted (−43 % of disk).
+- `app/messages.py` — the **translation contract** between the server and the
+  page: `STAGES` (progress stages) and `ERRORS` (error codes) are the reference
+  catalogues, their wording is **English** (what the CLI prints, and what
+  `GET /api/jobs/{id}` returns in `stage`/`error`), and `MediaError` carries
+  `code` + serialisable `params`. Unknown key -> the key itself is returned
+  (`stage_text`/`error_text` never raise). Any key added here must also be added
+  to the dictionary of `static/index.html` — with the *same English wording* and
+  a French translation — otherwise `tests/test_i18n.py` fails. Keep one
+  catalogue per side: English here, English + French on the page.
+- `app/cancel.py` — `JobCancelled` + `raise_if_cancelled()` (checkpoints between
+  blocks, between chunks, on every progress line) and **`GPU_LOCK`**, the global
+  lock taken around `enhance_wav` **and** transcription: per-model locks are not
+  enough. `main.py`'s single worker already serializes jobs, so this lock is
+  never contended today — it stays as a safety net for anyone calling
+  `process_file` directly (script, test): without it, enhancement and
+  transcription could overlap and both models would be resident on the 8 GB
+  card at once.
+- `app/config.py` — every limit and the retention settings, read from the
+  environment (see the “Configuration” table in README.md); an unreadable or
+  zero value falls back to the default.
+- `app/transcriber.py` — wrapper around the Parakeet TDT transcription model
+  (`nvidia/parakeet-tdt-0.6b-v3`, NeMo checkpoint loaded with
+  `nemo.collections.asr.models.ASRModel.restore_from` from the local HuggingFace
+  cache, downloaded if absent; `half()` on CUDA). Singleton + lock like
+  `enhancer.py` (shared VRAM), lazy load, `transcribe(wav) -> Transcript`. The
+  `nemo` import stays in `_load()` (heavy). `is_available()` (free function)
+  answers “is NeMo installed?” with `importlib.util.find_spec` — no import, so
+  it is nearly free even when called on every `GET /api/status` (the page polls
+  every 2 s); the result is published in `status()["available"]` and consumed by
+  `_check_transcribe()` (`app/main.py`) and by the UI checkbox.
+  **The chunking lives here too**: `CHUNK_SEC = 30` s blocks overlapping by
+  `OVERLAP_SEC = 10` s, read in streaming on a single `sf.SoundFile` (`seek`),
+  resampled to 16 kHz per chunk, `model.transcribe([arr_numpy],
+  return_hypotheses=True, num_workers=0, timestamps=True)`, progress emitted per
+  chunk. `plan_chunks()` returns four bounds per chunk
+  `(read_start, read_stop, kept_start, kept_stop)`: the beginning of a blob is
+  where Parakeet is least reliable, so it is not kept in the current chunk (it
+  was already transcribed at the end of the previous one); the kept windows tile
+  `[0, frames)` with no gap **and no duplicate**. `to_cues(ts, offset, t0, t1)`
+  applies the window — `t0`/`t1` are **relative to the chunk read**, which
+  starts `OVERLAP_SEC` before the kept window, and `offset` shifts it back to
+  file time. The `.txt` text is built from the same words as the subtitles (falling
+  back to the model's raw text when there are no timestamps). `timestamps=True`
+  fills `hypothesis.timestamp` (a `word` / `segment` dict): `to_cues()` turns it
+  into readable subtitles (sentences if the model gives any, otherwise word
+  grouping; times forced to increase, TDT alignment is not monotonic) and
+  `render_srt()` produces the `.srt`.
+- `app/cli.py` — command line interface (reuses `processor`); prints the English
+  `stage_text()` (it translates nothing), so its `_cb` accepts the four
+  arguments of `on_stage`; accepts a file OR a folder (recursive, continues on
+  error, final recap); `--format wav|mp3` (default: wav); `--transcribe`
+  (default: off) adds `<stem>_transcript.txt` and `<stem>_pyclean-audio.srt`.
+- `static/index.html` — **multilingual** UI (English by default, French second)
+  with: drag & drop of a file or a folder (recursive reading via
+  `webkitGetAsEntry` / `webkitdirectory`), **linked** A/B (both players follow
+  each other on play/pause/seek, “▶ Source” / “▶ Enhanced” buttons, “linked”
+  checkbox — “▶ Origine” / “▶ Amélioré” in French), “Transcribe the cleaned
+  audio” checkbox (off by default, **disabled together with the `./run.sh --asr`
+  command when NeMo is missing** — `setTranscribeEnabled()` on the same
+  `available` as the API), queue position, “Cancel processing” button, “Delete
+  results” button, job polling, per-file result list + ZIP download.
+  - **i18n**: two flags 🇬🇧 / 🇫🇷 **under the LavaSR badge** (`applyLang`).
+    Default language `en`, remembered in `localStorage` (`pyclean.lang`);
+    `document.documentElement.lang` and `<title>` follow. Translations live in a
+    `<script type="application/json" id="i18n">` block: a `server` section
+    (mirror of `app/messages.py`) plus a `ui` section (keys prefixed with
+    `ui.`), merged into one flat table per language (`buildTables`; `ui` wins on
+    a collision). Fixed labels: attribute `data-i18n="key"` (the **English text
+    is hardcoded in the page**, it is what shows before the script runs —
+    `tests/test_i18n.py` compares it with the dictionary). Dynamic labels:
+    `T(el, key, params)` or `bind(el, fn)`; the folder **title** needs the whole
+    job, so it is recomputed by `paintFolderTitle()`, while the folder **note**
+    is two concatenated keys and uses `bind` (never `T` with a built string —
+    that would leave a raw key in the UI). Switching language replays the
+    bindings (`replayBindings`) **without rebuilding the DOM**, so A/B playback
+    and the transcript are preserved. `bind()` keeps at most one binding per
+    node and `pruneBindings()` drops the ones of removed nodes (folder rows,
+    download buttons).
+  - **API keys**: `stageText({key, args, raw})` renders a job stage (`raw` = the
+    server's text, used when the key is unknown) and handles the nested
+    `inner_key`/`inner_args` stage of a folder job; `errorText(code, params, raw)`
+    does the same for `error_code`/`error_params` and for the body of an error
+    response (`code`/`params`, see `ApiError`); `detailText(detail)` flattens
+    FastAPI's 422 body (a list of objects) so the error box never shows
+    `[object Object]`; `jobStage(job)` is the `{key, args, raw}` triple for a job
+    or a folder entry.
+- `tests/` — pytest (no model loaded: `app.enhancer` / `app.transcriber` are
+  replaced by fake modules in `conftest.py`); `ruff check` is the only lint that
+  counts. `tests/test_messages.py` and `tests/test_i18n.py` cover the dictionary
+  (server keys present in both languages, no key shadowing across sections, same
+  parameter names in both languages, the page's hardcoded English up to date,
+  flags located under the badge and in order).
 
-## Contraintes du modèle à respecter
+## Model constraints to respect
 
-- Le modèle consomme **toujours 16 kHz mono** (`Stream16k` : sr de la source →
-  `input_sr` → 16 kHz) et produit **48 kHz** (facteur 3). Toute modification du
-  chemin d'échantillonnage doit préserver cette chaîne.
-- Avant chaque inférence, il faut poser le raffineur :
+- The model always consumes **16 kHz mono** (`Stream16k`: source sample rate →
+  `input_sr` → 16 kHz) and produces **48 kHz** (factor 3). Any change to the
+  resampling path must preserve that chain.
+- Before every inference, set the refiner:
   `model.bwe_model.lr_refiner = FastLRMerge(device, cutoff=cutoff,
-  transition_bins=1024)` avec `cutoff = input_sr // 2` par défaut.
-- La sortie d'un bloc doit être ramenée à **exactement 3 × n_in** échantillons
-  (robage/padding) — la librairie peut dériver de quelques samples.
-- Ne PAS utiliser `model.enhance(..., batch=True)` de la librairie : elle
-  padding sans rober la fin. Le découpage maison de `enhancer.py` remplace ce
-  mode.
-- L'inférence est sérialisée par `LavaEnhancer._lock` (état global du
-  raffineur + VRAM). Ne pas lancer d'inférence en dehors de ce verrou, ni en
-  dehors de `GPU_LOCK` (qui couvre aussi Parakeet).
-- `model.enhance` attend un tenseur **[batch, temps]** : lui passer un vecteur
-  1-D fait planter vocos (`Padding size 2 is not supported for 1D input`).
-- **Parakeet (transcription) — trois points à ne pas casser :**
-  - *Tranches courtes, chevauchées.* Deux raisons, opposées :
-    (a) **VRAM** — les activations de l'encodeur croissent linéairement avec
-    la durée : une heure en un seul blob pique à ~7,5 Go et fait OOM sur une
-    carte 8 Go ;
-    (b) **justesse** — le checkpoint est entraîné sur des énoncés de
-    `max_duration: 40 s` (`model_config.yaml`). Au-delà, Parakeet perd les
-    extrémités et *condense* des passages entiers. Mesuré sur le même audio de
-    300 s (contrôle bit à bit de l'audio amélioré, blocs lus en entier) :
+  transition_bins=1024)` with `cutoff = input_sr // 2` by default.
+- A chunk's output must be brought back to **exactly 3 × n_in** samples
+  (trim/pad) — the library can drift by a few samples.
+- Do NOT use the library's `model.enhance(..., batch=True)`: it pads without
+  trimming the end. `enhancer.py`'s own chunking replaces that mode.
+- Inference is serialized by `LavaEnhancer._lock` (global refiner state + VRAM).
+  Never run inference outside that lock, nor outside `GPU_LOCK` (which also
+  covers Parakeet).
+- `model.enhance` expects a **[batch, time]** tensor: passing a 1-D vector
+  crashes vocos (`Padding size 2 is not supported for 1D input`).
+- **Parakeet (transcription) — three things not to break:**
+  - *Short, overlapping chunks.* Two opposing reasons: (a) **VRAM** — the
+    encoder's activations grow linearly with duration: one hour in a single blob
+    peaks at ~7.5 GB and OOMs on an 8 GB card; (b) **accuracy** — the checkpoint
+    is trained on `max_duration: 40 s` utterances (`model_config.yaml`). Beyond
+    that, Parakeet loses the extremities and *condenses* whole passages. Measured
+    on the same 300 s audio (enhanced audio checked bit for bit, chunks read in
+    full):
 
-    | bloc | 1er mot | mots dans [0,30 s] | mots en 120-300 s | fin |
+    | chunk | 1st word | words in [0,30 s] | words in 120-300 s | end |
     |---|---|---|---|---|
     | 300 s | 51 s | 62 | — | 299 s |
     | 150 s | 26 s | 92 | — | 300 s |
-    | 60 s  | 0,8 s (max 15,9 s) | 109 | 190 | **284 s (16 s perdues)** |
-    | 30 s  | 0,7 s (max 6,5 s) | 95 | **254** | 300 s |
+    | 60 s  | 0.8 s (max 15.9 s) | 109 | 190 | **284 s (16 s lost)** |
+    | 30 s  | 0.7 s (max 6.5 s) | 95 | **254** | 300 s |
 
-    `CHUNK_SEC = 30` avec `OVERLAP_SEC = 10` : chaque bloc est lu avec 10 s de
-    contexte en amont et la fenêtre gardée est rejettée, donc le début d'un
-    bloc est toujours pris chez le bloc précédent, et la queue (que 60 s perdait)
-    est prise chez le bloc suivant. `OVERLAP_SEC` doit rester **≥ le blanc de
-    tête** (6,5 s mesurés en 30 s), sinon la jointure perd les premiers mots.
-    Ne pas rallonger les tranches pour « gagner du temps » : 30 s coûte 1,5×
-    d'audio passé au modèle (~20 s de transcription GPU pour 54 min) et fait
-    tomber le pic VRAM de 5,0 Go à 2,4 Go. Ne pas passer en un seul blob.
-  - *Pas de déplacement de device.* Boucler `cuda → cpu → cuda` corrompt le
-    modèle : `illegal memory access`, puis sortie `⁇`. Le device est choisi
-    au chargement et n'est plus bougé. (NeMo construit le modèle sur CPU et
-    le pose sur CUDA à la 1re inférence : c'est normal, 0 Mo alloué au
-    chargement n'indique pas un échec.)
-  - *`gc.collect()` + `torch.cuda.empty_cache()` après `_load()`* : sans ça
-    le résidu fp32 (~2,4 Go) reste réservé et la carte est inutilisable pour
-    un second job. Après gc : ~1,2 Go (poids fp16).
-- `soundfile.SoundFile` : ouvrir en écriture avec `mode="w"` explicite
+    `CHUNK_SEC = 30` with `OVERLAP_SEC = 10`: each chunk is read with 10 s of
+    upstream context and that window is discarded, so the beginning of a chunk
+    is always taken from the previous one, and the tail (which 60 s chunks lost)
+    is taken from the next one. `OVERLAP_SEC` must stay **≥ the head silence**
+    (6.5 s measured at 30 s), otherwise the join loses the first words. Do not
+    lengthen the chunks to “save time”: 30 s costs 1.5× more audio through the
+    model (~20 s of GPU transcription for 54 min) and brings the VRAM peak down
+    from 5.0 GB to 2.4 GB. Never switch to a single blob.
+  - *No device hopping.* Looping `cuda → cpu → cuda` corrupts the model:
+    `illegal memory access`, then `⁇` output. The device is chosen at load time
+    and never moved again. (NeMo builds the model on CPU and places it on CUDA at
+    the first inference: that is normal, 0 MB allocated at load time does not
+    indicate a failure.)
+  - *`gc.collect()` + `torch.cuda.empty_cache()` after `_load()`*: without it
+    the fp32 residue (~2.4 GB) stays reserved and the card is unusable for a
+    second job. After gc: ~1.2 GB (fp16 weights).
+- `soundfile.SoundFile`: open for writing with an explicit `mode="w"`
   (`sf.SoundFile(path, "w", samplerate=48000, channels=1, subtype="PCM_16")`)
-  et comparer les longueurs avec `numel()` (pas `size()`).
+  and compare lengths with `numel()` (not `size()`).
 
-## Environnement
+## Environment
 
-- Python 3.11.16 dans `.venv` (torch 2.14+cu130) ; le Python système (3.14) ne
-  sert qu'aux utilitaires. Toujours lancer via `.venv/bin/python`.
-- GPU NVIDIA + CUDA détectés automatiquement (`torch.cuda.is_available()`),
-  sinon CPU. Le premier téléchargement du modèle LavaSR (**~115 Mo**, blobs
-  `~/.cache/huggingface/hub/models--YatharthS--LavaSR`) vient de HuggingFace
-  et est mis en cache ; `lifespan` le précharge dans un thread.
-- Débit LavaSR mesuré (RTX 2000 Ada, 8 Go, torch 2.14+cu130) : **~200× le
-  temps réel** — 300 s d'audio (5 blocs de 60 s) enhancés en 1,41 s sans
-  débruiteur, 1,57 s avec. Le temps passé par un job court est donc surtout
-  ffmpeg (décodage 48 kHz, MP3, remontage), pas l'inférence.
-- Transcription (option `--transcribe` / case web) : Parakeet TDT 0.6B v3
-  via NeMo (`nemo_toolkit[asr]`, **`./run.sh --asr`**, absent de
-  l'installation de base),
-  checkpoint `.nemo` `nvidia/parakeet-tdt-0.6b-v3` (**~2,4 Go** sur disque)
-  chargé depuis le cache HuggingFace local (`~/.cache/huggingface/hub`,
-  surchargeable par `HF_HOME`) s'il est déjà là, sinon téléchargé.
-  `half()` sur CUDA (~1,2 Go de poids) ;
-  transcription par blocs de 30 s chevauchés de 10 s (1,5× d'audio passé au
-  modèle), VRAM bornée — **2,4 Go de pic mesurés** avec LavaSR chargé, quel que
-  soit le nombre de blocs, contre 5,0 Go en blocs de 300 s. 54 min de fichier
-  se transcrivent en ~20 s sur GPU.
-  Sur CPU uniquement : mesuré à ~13× le temps réel (230 s d'audio en 18 s sur
-  20 cœurs) — la GPU reste préférable.
-  NeMo 3.0 : un chemin local se charge avec `ASRModel.restore_from`
-  (`from_pretrained` n'accepte que des repo-id HuggingFace).
-- `ffmpeg`/`ffprobe` requis sur le PATH.
-- Le LSP/IDE utilise souvent le Python système : les erreurs
-  « Import "torch" could not be resolved » sont attendues et sans objet.
-- Pour redémarrer le serveur depuis un shell : `pkill -f "uvicorn app[.]main"`
-  (la notation crochet évite de tuer sa propre ligne de commande) puis lancer
-  détaché : `setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >> /tmp/server.log 2>&1 < /dev/null &)'`.
+- Python 3.11.16 in `.venv` (torch 2.14.0+cu130); the system Python (3.14) is only
+  used for utilities. Always run through `.venv/bin/python`.
+- NVIDIA GPU + CUDA detected automatically (`torch.cuda.is_available()`), CPU
+  otherwise. The first download of the LavaSR model (**~115 MB**, blobs under
+  `~/.cache/huggingface/hub/models--YatharthS--LavaSR`) comes from HuggingFace
+  and is cached; the `lifespan` preloads it in a thread.
+- Measured LavaSR throughput (RTX 2000 Ada, 8 GB, torch 2.14+cu130): **~200×
+  real time** — 300 s of audio (5 chunks of 60 s) enhanced in 1.41 s without the
+  denoiser, 1.57 s with it. The wall-clock time of a short job is therefore
+  mostly ffmpeg (48 kHz decode, MP3, remux), not inference.
+- Transcription (`--transcribe` option / web checkbox): Parakeet TDT 0.6B v3 via
+  NeMo (`nemo_toolkit[asr]`, **`./run.sh --asr`**, absent from the base install),
+  `.nemo` checkpoint `nvidia/parakeet-tdt-0.6b-v3` (**~2.4 GB** on disk) loaded
+  from the local HuggingFace cache (`~/.cache/huggingface/hub`, overridable with
+  `HF_HOME`) when already there, downloaded otherwise. `half()` on CUDA (~1.2 GB
+  of weights); transcription in 30 s chunks overlapping by 10 s (1.5× more audio
+  through the model), bounded VRAM — **2.4 GB peak measured** with LavaSR
+  loaded, whatever the number of chunks, against 5.0 GB with 300 s chunks. 54
+  min of audio transcribes in ~20 s on GPU. CPU only: measured at ~13× real time
+  (230 s of audio in 18 s on 20 cores) — the GPU is still preferable. NeMo 3.0:
+  a local path is loaded with `ASRModel.restore_from` (`from_pretrained` only
+  accepts HuggingFace repo ids).
+- `ffmpeg` / `ffprobe` required in the PATH.
+- LSP/IDEs often use the system Python: “Import "torch" could not be resolved”
+  errors are expected and irrelevant.
+- To restart the server from a shell: `pkill -f "uvicorn app[.]main"` (the
+  bracket notation avoids killing your own command line) then start it detached:
+  `setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >> /tmp/server.log 2>&1 < /dev/null &)'`.
 
-## Tests rapides
+## Quick tests
 
 ```bash
-# signal dégradé 8 kHz + vidéo de test
+# degraded 8 kHz signal + test video
 ffmpeg -f lavfi -i "sine=frequency=350:duration=6" -af "lowpass=2400,aresample=8000" test_8k.wav
 ffmpeg -f lavfi -i "testsrc=duration=5:size=320x240:rate=25" -f lavfi -i "sine=frequency=300:duration=5" -af lowpass=2500 -c:v libx264 -c:a aac test.mp4
 
-# web (fichier seul : WAV et MP3 proposés)
+# web (single file: WAV and MP3 are both offered)
 JOB=$(curl -s -X POST -F "file=@test_8k.wav" http://127.0.0.1:8787/api/enhance | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 curl -s http://127.0.0.1:8787/api/jobs/$JOB
 curl -s -o out.wav http://127.0.0.1:8787/api/jobs/$JOB/file/enhanced_wav
 curl -s -o out.mp3 http://127.0.0.1:8787/api/jobs/$JOB/file/enhanced_mp3
 
-# CLI (défaut : wav ; --format mp3 ajoute <stem>_pyclean-audio.mp3)
+# CLI (default: wav ; --format mp3 adds <stem>_pyclean-audio.mp3)
 .venv/bin/python -m app.cli test.mp4 -o out/
 .venv/bin/python -m app.cli test.mp4 -o out_mp3/ --format mp3
 
-# dossier (récursif) — CLI
+# folder (recursive) — CLI
 mkdir -p tdir/under && cp test_8k.wav tdir/ && cp test.mp4 tdir/under/
 .venv/bin/python -m app.cli tdir -o out_dir/
 .venv/bin/python -m app.cli tdir -o out_dir_mp3/ --format mp3
 
-# dossier (récursif) — web (format de sortie par défaut : MP3 ; -F "output_format=wav" pour WAV)
+# folder (recursive) — web (default output format: MP3 ; -F "output_format=wav" for WAV)
 JOB=$(curl -s -X POST \
   -F "files=@test_8k.wav;filename=root/a.mp3" \
   -F "files=@test.mp4;filename=under/b.mp4" \
   http://127.0.0.1:8787/api/enhance_folder | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
-curl -s http://127.0.0.1:8787/api/jobs/$JOB            # files[] : état par fichier, output_format
+curl -s http://127.0.0.1:8787/api/jobs/$JOB            # files[]: state per file, output_format
 curl -s -o a.mp3  http://127.0.0.1:8787/api/jobs/$JOB/file/0/enhanced_mp3
-curl -s -o all.zip http://127.0.0.1:8787/api/jobs/$JOB/zip   # SRT inclus en <stem>.srt
+curl -s -o all.zip http://127.0.0.1:8787/api/jobs/$JOB/zip   # SRT included as <stem>.srt
 
-# transcription (fichier seul) : -F "transcribe=true" → artefacts transcript
-# et transcript_srt (le .srt seulement si le modèle a renvoyé des horodatages)
+# transcription (single file): -F "transcribe=true" → transcript and
+# transcript_srt artifacts (the .srt only if the model returned timestamps)
 JOB=$(curl -s -X POST -F "file=@test_8k.wav" -F "transcribe=true" \
   http://127.0.0.1:8787/api/enhance | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 curl -s http://127.0.0.1:8787/api/jobs/$JOB | python3 -m json.tool
 
-# régression OOM : fichier long (1 h) + transcription, surveiller la VRAM
+# error paths (now carry a translatable code next to the English detail)
+curl -s -X POST -F "file=@test_8k.wav" -F "input_sr=abc" http://127.0.0.1:8787/api/enhance   # 422
+curl -s http://127.0.0.1:8787/api/jobs/inconnu                                                # 404 + code
+
+# OOM regression: long file (1 h) + transcription, watch VRAM
 nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 2 > /tmp/vram.log &
 JOB=$(curl -s -X POST -F "file=@long.mp3" -F "transcribe=true" \
   http://127.0.0.1:8787/api/enhance | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
-curl -s http://127.0.0.1:8787/api/jobs/$JOB          # state=done, artefacts
-awk '{if($NF+0>m)m=$NF+0} END{print "pic VRAM: " m " MiB"}' /tmp/vram.log
+curl -s http://127.0.0.1:8787/api/jobs/$JOB          # state=done, artifacts
+awk '{if($NF+0>m)m=$NF+0} END{print "peak VRAM: " m " MiB"}' /tmp/vram.log
 ```
 
-Ces commandes de test écrivent `test_8k.wav` et `test.mp4` (~426 Mo) à la
-racine du dépôt : `.gitignore` ne couvre ni l'un ni l'autre (il ne liste que
-`*.mp3`, `data`, `.venv`, `__pycache__`, `.pytest_cache/`, `.ruff_cache/`),
-et les autres sorties (`out*/`, `tdir/`) sont à effacer à la main.
+These test commands write `test_8k.wav` and `test.mp4` (~426 MB) at the repo
+root: `.gitignore` covers `*.mp4` but **not** `*.wav` (it lists `*.mp3`,
+`*.mp4`, `data`, `.venv`, `__pycache__`, `.pytest_cache/`, `.ruff_cache/`), and
+the other outputs (`out*/`, `tdir/`) have to be deleted by hand. Note that
+`.gitignore` itself is not committed yet.
 
-Critères de validité :
-- durée de sortie == durée d'entrée (à < 1 frame près en 48 kHz) ;
-- MP3 : durée identique au WAV, 48 kHz mono, ~192 kbit/s ;
-- aucune discontinuité aux jonctions de blocs (max|Δ| local ≤ percentile 99,99
-  global du signal) ;
-- la bande haute (> Nyquist d'entrée) doit contenir plus d'énergie qu'un simple
-  upsampling sinc de la même entrée (preuve de la BWE) ;
-- pour les vidéos : flux vidéo identique (`-c:v copy`), audio AAC 48 kHz ;
-- transcription d'un fichier long : `state=done`, transcript non vide, SRT
-  horodaté et croissant, **premier mot < 5 s et dernier mot à < 1 s de la fin**
-  (le découpage perd sinon les extrémités des blocs), aucun trou > 8 s dans le
-  SRT là où l'audio a une énergie > 5 % de la médiane, pic VRAM ≤ ~2,5 Go sur
-  une carte 8 Go et **constant** quel que soit le nombre de blocs ;
-- file d'attente : deux envois successifs → le second reste `queued` tant que
-  le premier tourne, puis passe `done` ;
-- annulation : `POST /api/jobs/{id}/cancel` → `state=cancelled` et le dossier
-  du job disparaît de `data/jobs/` ;
-- rétention : `PYCLEAN_JOB_TTL=20 PYCLEAN_PURGE_INTERVAL=5` → le job devient
-  404 et `data/jobs/` se vide.
+Validity criteria:
+- output duration == input duration (to within < 1 frame at 48 kHz);
+- MP3: same duration as the WAV, 48 kHz mono, ~192 kbit/s;
+- no discontinuity at the chunk joins (local max|Δ| ≤ 99.99th percentile of the
+  whole signal);
+- the high band (> input Nyquist) must hold more energy than a plain sinc
+  upsampling of the same input (proof that the BWE happened);
+- for videos: identical video stream (`-c:v copy`), AAC audio at 48 kHz;
+- transcription of a long file: `state=done`, non-empty transcript, timestamped
+  and increasing SRT, **first word < 5 s and last word within < 1 s of the
+  end** (otherwise the chunking loses the extremities of the chunks), no gap
+  > 8 s in the SRT where the audio energy is > 5 % of the median, VRAM peak
+  ≤ ~2.5 GB on an 8 GB card and **constant** whatever the number of chunks;
+- queue: two consecutive submissions → the second stays `queued` while the first
+  runs, then goes `done`;
+- cancellation: `POST /api/jobs/{id}/cancel` → `state=cancelled` and the job
+  folder disappears from `data/jobs/`;
+- retention: `PYCLEAN_JOB_TTL=20 PYCLEAN_PURGE_INTERVAL=5` → the job becomes a
+  404 and `data/jobs/` empties.
 
-## Limites connues (documentées dans « Limitations » de README.md, en anglais)
+## Known limitations (also documented in the “Limitations” section of README.md)
 
-- Sortie mono 48 kHz ; vidéos → MP4 (sous-titres et pistes multiples perdus).
-- Durée max ~10 000 s, fichier max 2 Go, dossier 500 fichiers / 8 Go.
-- HEAD renvoie 404 sur les routes FastAPI (sans impact navigateur : GET).
-- Un traitement à la fois (file d'attente) ; `keep_original=False` en mode
-  dossier (pas d'A/B) : `original_wav` n'y est donc jamais produit.
-- Encodage MP3 et remontage vidéo restent **séquentiels** : les paralléliser
-  ne gagne que ~0,4 s sur une vidéo de 5 min (mesuré), pour un multiplexage de
-  progression bien plus verbeux. À reconsidérer si le codec change.
-- La transcription est indisponible sans `nemo_toolkit[asr]` : `./run.sh --asr`
-  l'ajoute au `.venv` existant. Tant qu'il manque, l'API refuse `transcribe=true`
-  en **400** et l'interface désactive la case — plus d'échec
-  `ModuleNotFoundError: nemo` en cours de job. Le `.srt` n'est produit que si
-  le modèle renvoie des horodatages ; le `.txt` existe toujours (éventuellement
-  avec `(aucune parole détectée)`). Les sous-titres ne sont pas **muxés** dans
-  le MP4 : c'est un fichier à charger à part.
+- 48 kHz mono output; videos → MP4 (existing subtitles and extra tracks lost).
+- Max duration ~10 000 s, max file size 2 GB, folder 500 files / 8 GB.
+- HEAD returns 404 on the FastAPI routes (no browser impact: the page uses GET).
+- One job at a time (queue); `keep_original=False` in folder mode (no A/B), so
+  `original_wav` is never produced there.
+- The web UI is **English by default**, French second: both flags sit under the
+  LavaSR badge and the choice is remembered per browser. Everything else
+  (server wording, CLI, docs) is English with no language switch; the only
+  French left is the UI's translations and the transcript placeholder
+  `(aucune parole détectée)` when the model recognises nothing — an artefact of
+  the file, not of the interface.
+- MP3 encoding and video remux stay **sequential**: parallelising them gains
+  only ~0.4 s on a 5-minute video (measured), for a far more verbose progress
+  multiplexing. Revisit if the codec changes.
+- Transcription is unavailable without `nemo_toolkit[asr]`: `./run.sh --asr`
+  adds it to the existing `.venv`. While it is missing, the API refuses
+  `transcribe=true` with **400** and the UI disables the checkbox — no more
+  `ModuleNotFoundError: nemo` mid-job. The `.srt` is only produced if the model
+  returns timestamps; the `.txt` always exists (possibly with
+  `(aucune parole détectée)`). Subtitles are not **muxed** into the MP4: it is
+  a separate file to load.

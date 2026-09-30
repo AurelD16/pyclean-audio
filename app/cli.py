@@ -5,12 +5,14 @@ from pathlib import Path
 from .processor import iter_media_files, process_file
 
 
-def _cb(stage, prog):
+def _cb(stage, prog, key=None, args=None):
+    """Print a stage. The CLI translates nothing: it prints the wording
+    `process_file` joins to the key (see app/messages.py)."""
     print(f"\r    {stage:<45s} {int(prog * 100):3d} %", end="", flush=True)
 
 
 def _process_one(src: Path, outdir: Path, a, seen: dict):
-    """Traite un fichier ; évite les collisions de noms dans le même dossier."""
+    """Process one file; avoids name collisions inside the same folder."""
     key = (str(outdir), src.stem.lower())
     n = seen.get(key, 0) + 1
     seen[key] = n
@@ -23,12 +25,12 @@ def _process_one(src: Path, outdir: Path, a, seen: dict):
 def _run_folder(root: Path, a) -> int:
     files = iter_media_files(root)
     if not files:
-        print(f"Aucun fichier audio/vidéo pris en charge trouvé dans : {root}")
+        print(f"No supported audio/video file found in: {root}")
         return 1
     outdir = Path(a.outdir).resolve() if a.outdir else root.parent / (root.name + "_pyclean-audio")
-    print(f"pyclean-audio — dossier : {root}")
-    print(f"  {len(files)} fichier(s) trouvé(s), récursif")
-    print(f"  sortie : {outdir}\n")
+    print(f"pyclean-audio — folder: {root}")
+    print(f"  {len(files)} file(s) found, recursive")
+    print(f"  output: {outdir}\n")
 
     seen = {}
     ok, failed = 0, []
@@ -50,11 +52,11 @@ def _run_folder(root: Path, a) -> int:
             if res.get("transcript_srt"):
                 print(f"      {res['transcript_srt']}")
         except Exception as e:
-            print(f"\n    ÉCHEC : {e}")
+            print(f"\n    FAILED: {e}")
             failed.append(str(rel))
-    print(f"\nTerminé : {ok}/{len(files)} fichier(s) traité(s).")
+    print(f"\nDone: {ok}/{len(files)} file(s) processed.")
     if failed:
-        print("  En échec :")
+        print("  Failed:")
         for rel in failed:
             print(f"   - {rel}")
         return 1
@@ -64,50 +66,50 @@ def _run_folder(root: Path, a) -> int:
 def main():
     p = argparse.ArgumentParser(
         prog="pyclean-audio",
-        description="Améliorer l'audio d'un fichier audio ou vidéo "
-                    "(ou d'un dossier entier, de façon récursive) avec pyclean-audio.",
+        description="Restore the audio of an audio or video file "
+                    "(or of a whole folder, recursively) with pyclean-audio.",
     )
-    p.add_argument("file", help="fichier audio/vidéo d'entrée, ou dossier (traitement récursif)")
+    p.add_argument("file", help="input audio/video file, or folder (recursive processing)")
     p.add_argument("-o", "--outdir", default=None,
-help="dossier de sortie (défaut : <fichier>_pyclean-audio à côté du fichier, "
-                         "ou <dossier>_pyclean-audio à côté du dossier)")
+help="output folder (default: <file>_pyclean-audio next to the input, "
+                         "or <folder>_pyclean-audio next to the folder)")
     p.add_argument("--denoise", action="store_true",
-                   help="activer la réduction de bruit (UL-UNAS)")
+                   help="run the denoiser (UL-UNAS) first")
     p.add_argument("--input-sr", type=int, default=16000, choices=[8000, 16000, 24000],
-                   help="résolution d'entrée simulée (défaut : 16000)")
+                   help="simulated input bandwidth (default: 16000)")
     p.add_argument("--cutoff", type=int, default=None,
-                   help="cutoff en Hz de l'étage de raffinement (défaut : auto)")
+                   help="cutoff in Hz of the refinement stage (default: auto)")
     p.add_argument("--format", dest="format", choices=["wav", "mp3"], default="wav",
-                   help="format de sortie audio (défaut : wav ; mp3 : 192 kbit/s)")
+                   help="audio output format (default: wav ; mp3: 192 kbit/s)")
     p.add_argument("--transcribe", action="store_true",
-                   help="transcrire l'audio nettoyé avec Parakeet TDT "
-                        "(fichiers <nom>_transcript.txt et <nom>_pyclean-audio.srt, "
-                        "désactivé par défaut)")
+                   help="transcribe the cleaned audio with Parakeet TDT "
+                        "(writes <name>_transcript.txt and <name>_pyclean-audio.srt, "
+                        "off by default)")
     a = p.parse_args()
 
     src = Path(a.file).expanduser().resolve()
     if not src.exists():
-        sys.exit(f"Introuvable : {src}")
+        sys.exit(f"Not found: {src}")
 
     if src.is_dir():
         sys.exit(_run_folder(src, a))
 
     outdir = Path(a.outdir).resolve() if a.outdir else src.parent / (src.stem + "_pyclean-audio")
 
-    print(f"pyclean-audio — traitement de : {src}")
+    print(f"pyclean-audio — processing: {src}")
     res = _process_one(src, outdir, a, {})
     print()
-    print("  Résultat :")
-    print(f"    audio d'origine  : {res['original_wav']}")
-    print(f"    audio amélioré   : {res['enhanced_wav']}")
+    print("  Result:")
+    print(f"    original audio  : {res['original_wav']}")
+    print(f"    enhanced audio  : {res['enhanced_wav']}")
     if res.get("enhanced_mp3"):
-        print(f"    audio amélioré   : {res['enhanced_mp3']}")
+        print(f"    enhanced audio  : {res['enhanced_mp3']}")
     if res.get("transcript"):
-        print(f"    transcription    : {res['transcript']}")
+        print(f"    transcript      : {res['transcript']}")
     if res.get("transcript_srt"):
-        print(f"    sous-titres      : {res['transcript_srt']}")
+        print(f"    subtitles       : {res['transcript_srt']}")
     if res["output"]:
-        print(f"    vidéo finale     : {res['output']}")
+        print(f"    final video     : {res['output']}")
 
 
 if __name__ == "__main__":

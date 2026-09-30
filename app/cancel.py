@@ -1,18 +1,18 @@
-"""Annulation coopérative et exclusion mutuelle des traitements GPU.
+"""Cooperative cancellation and mutual exclusion of GPU work.
 
-Un job annulé (bouton « Annuler » de l'interface) pose un `threading.Event`.
-Les longs traitements le vérifient à leurs points de contrôle (entre deux
-blocs d'inférence, entre deux tranches de transcription, à chaque ligne de
-progression ffmpeg) et lèvent `JobCancelled` pour unwinder proprement.
+A cancelled job (the UI's "Cancel" button) sets a `threading.Event`. Long
+operations check it at their checkpoints (between two inference blocks, between
+two transcription chunks, on every ffmpeg progress line) and raise
+`JobCancelled` to unwind cleanly.
 
-`GPU_LOCK` sérialise les phases qui chargent un modèle sur la carte. Les
-verrous par modèle (`LavaEnhancer._lock`, `ParakeetTranscriber._lock`) ne
-suffisent pas : sans verrou global, un job peut améliorer l'audio pendant qu'un
-autre transcrit, et les deux modèles résident en même temps sur les 8 Go.
-Le verrou est pris au niveau du traitement d'un *fichier* (amélioration puis
-transcription) ; les phases ffmpeg restent hors verrou. Le worker unique de
-`main.py` sérialise déjà les jobs, donc le verrou n'est en pratique jamais
-disputé — il reste le filet de sécurité pour un appel direct à `process_file`.
+`GPU_LOCK` serialises the phases that load a model onto the card. Per-model
+locks (`LavaEnhancer._lock`, `ParakeetTranscriber._lock`) are not enough:
+without a global lock one job can enhance audio while another transcribes, and
+both models are then resident on the 8 GB card at once. The lock is taken
+around the processing of a single *file* (enhancement then transcription); the
+ffmpeg phases stay outside it. `main.py`'s single worker already serializes
+jobs, so the lock is never contended in practice — it stays as a safety net for
+a direct call to `process_file`.
 """
 
 import threading
@@ -21,9 +21,9 @@ GPU_LOCK = threading.Lock()
 
 
 class JobCancelled(Exception):
-    """Levée pour interrompre un traitement à la demande du client."""
+    """Raised to interrupt processing at the client's request."""
 
 
 def raise_if_cancelled(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
-        raise JobCancelled("Traitement annulé par le client.")
+        raise JobCancelled("Processing cancelled by the client.")

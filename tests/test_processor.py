@@ -1,7 +1,7 @@
-"""Pipeline ffmpeg : sonde, progression, gestion d'erreur, artefacts produits.
+"""ffmpeg pipeline: probe, progress, error handling, produced artifacts.
 
-Aucun torch n'est chargé : l'enhancer et le transcriber sont remplacés par des
-stubs (fixture `fake_models`).
+No torch is loaded: the enhancer and the transcriber are replaced by stubs
+(`fake_models` fixture).
 """
 
 import json
@@ -11,9 +11,25 @@ from pathlib import Path
 
 import pytest
 
+from app.messages import STAGES
 from app.processor import ALLOWED_EXT, iter_media_files, probe, process_file, run_ffmpeg
 
 from .conftest import fake_ffmpeg, requires_ffmpeg
+
+
+def noop(stage, prog, key=None, args=None):
+    """A process_file progress callback, with no side effect.
+
+    The last two parameters are optional: that is the shape `process_file`
+    emits (text for the CLI, key + params for the UI).
+    """
+
+
+def collect(log):
+    """Callback that records (text, progress, key)."""
+    def cb(stage, prog, key=None, args=None):
+        log.append((stage, prog, key))
+    return cb
 
 
 def make_wav(path, seconds=1.0, rate=48000, freq=440):
@@ -64,7 +80,7 @@ def test_run_ffmpeg_progression_bornee_a_un(tmp_path, monkeypatch):
 
 
 def test_run_ffmpeg_progression_sans_duree(tmp_path, monkeypatch):
-    """Sans durée connue, l'étape aboutit et termine à 1.0."""
+    """Without a known duration the step still completes and ends at 1.0."""
     fake_ffmpeg(tmp_path, monkeypatch, 'echo out_time_ms=5000000\necho progress=end\n')
     fracs = []
     run_ffmpeg(["-i", "in", str(tmp_path / "x")], None, fracs.append)
@@ -72,7 +88,7 @@ def test_run_ffmpeg_progression_sans_duree(tmp_path, monkeypatch):
 
 
 def test_run_ffmpeg_passe_nostdin(tmp_path, monkeypatch):
-    """-nostdin : ffmpeg ne doit jamais pouvoir voler le terminal/pipe du serveur."""
+    """-nostdin: ffmpeg must never be able to steal the server's terminal/pipe."""
     spy = tmp_path / "args.txt"
     fake_ffmpeg(tmp_path, monkeypatch, f'echo "$@" > {spy}\necho progress=end\n')
     run_ffmpeg(["-i", "in", str(tmp_path / "x")], 1.0, lambda f: None)
@@ -83,45 +99,45 @@ def test_run_ffmpeg_passe_nostdin(tmp_path, monkeypatch):
 
 def test_run_ffmpeg_echec_remonte_la_queue_stderr(tmp_path, monkeypatch):
     fake_ffmpeg(tmp_path, monkeypatch, 'echo "Conversion invalide" >&2\nexit 1\n')
-    with pytest.raises(RuntimeError, match="ffmpeg a échoué"):
+    with pytest.raises(RuntimeError, match="ffmpeg failed"):
         run_ffmpeg(["-i", "in", str(tmp_path / "x")], 10.0, lambda f: None)
 
 
 @pytest.mark.timeout(30)
 def test_run_ffmpeg_ne_se_bloque_pas_sur_un_stderr_vaste(tmp_path, monkeypatch):
-    """Régression : avec stderr=PIPE non drainé, ffmpeg se bloque après 64 Ko
-    et le job reste suspendu indéfiniment."""
+    """Regression: with an undrained stderr=PIPE, ffmpeg blocks after 64 KB and
+    the job hangs forever."""
     fake_ffmpeg(tmp_path, monkeypatch,
                 'i=0; while [ $i -lt 4000 ]; do '
-                'echo "ligne de diagnostic numéro $i -------------------" >&2; '
+                'echo "diagnostic line number $i -------------------" >&2; '
                 'i=$((i+1)); done; exit 1\n')
-    with pytest.raises(RuntimeError, match="ffmpeg a échoué"):
+    with pytest.raises(RuntimeError, match="ffmpeg failed"):
         run_ffmpeg(["-i", "in", str(tmp_path / "x")], 10.0, lambda f: None)
 
 
 @pytest.mark.timeout(30)
 def test_run_ffmpeg_tue_un_processus_bloque(tmp_path, monkeypatch):
-    """Le chien de garde doit tuer un ffmpeg qui n'émet plus de progression."""
+    """The watchdog must kill an ffmpeg that no longer emits progress."""
     fake_ffmpeg(tmp_path, monkeypatch, "sleep 60\n")
-    with pytest.raises(RuntimeError, match="expiré"):
+    with pytest.raises(RuntimeError, match="timed out"):
         run_ffmpeg(["-i", "in", str(tmp_path / "x")], 10.0, lambda f: None,
                    timeout=2)
 
 
 @pytest.mark.timeout(30)
 def test_run_ffmpeg_annulation_tue_le_processus(tmp_path, monkeypatch):
-    """Si le callback de progression lève, ffmpeg ne doit pas rester orphelin."""
+    """If the progress callback raises, ffmpeg must not be left orphaned."""
     spy = tmp_path / "alive.txt"
     fake_ffmpeg(tmp_path, monkeypatch,
-                'echo début\necho out_time_ms=1000000\n'
+                'echo start\necho out_time_ms=1000000\n'
                 f'trap "echo ok > {spy}; exit 0" TERM\nsleep 60\n')
 
     def boom(frac):
-        raise RuntimeError("annulé")
+        raise RuntimeError("cancelled")
 
-    with pytest.raises(RuntimeError, match="annulé"):
+    with pytest.raises(RuntimeError, match="cancelled"):
         run_ffmpeg(["-i", "in", str(tmp_path / "x")], 10.0, boom)
-    # le processus a reçu le kill : le fichier piège n'a pas pu être écrit
+    # the process was killed: the trap file could not be written
     assert not spy.exists()
 
 
@@ -144,9 +160,9 @@ def test_probe_mp4(tmp_path):
 
 
 def test_probe_fichier_invalide(tmp_path):
-    bad = tmp_path / "pas-un-media.txt"
+    bad = tmp_path / "not-a-media.txt"
     bad.write_text("bonjour")
-    with pytest.raises(RuntimeError, match="ffprobe a échoué"):
+    with pytest.raises(RuntimeError, match="ffprobe failed"):
         probe(bad)
 
 
@@ -157,7 +173,7 @@ def test_process_file_wav(tmp_path, fake_models):
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     log = []
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: log.append((s, p)))
+                       collect(log))
 
     assert res["kind"] == "audio"
     assert res["output"] is None
@@ -166,17 +182,43 @@ def test_process_file_wav(tmp_path, fake_models):
         assert Path(res[key]).exists()
     assert res["duration"] == pytest.approx(1.0, abs=0.05)
 
-    progs = [p for _, p in log]
-    assert progs == sorted(progs), "la progression doit être monotone"
+    progs = [p for _, p, _ in log]
+    assert progs == sorted(progs), "progress must be monotonic"
     assert progs[0] >= 0.0
     assert progs[-1] == 1.0
+
+
+@requires_ffmpeg
+def test_process_file_emets_des_cles_d_etape(tmp_path, fake_models):
+    """The UI translates the emitted keys: no stage may be a hardcoded text,
+    otherwise a progress line would stay in a single language."""
+    log = []
+    src = make_wav(tmp_path / "a.wav", seconds=1.0)
+    process_file(src, tmp_path / "out", False, 16000, None, collect(log),
+                 output_format="mp3")
+    keys = [k for _, _, k in log]
+    assert keys[0] == "decode"
+    assert keys[-1] == "done"
+    assert {"enhance", "mp3"} <= set(keys)
+    assert all(k in STAGES for k in keys), keys
+
+
+@requires_ffmpeg
+def test_process_file_video_etape_extraction_piste_audio(tmp_path, fake_models):
+    src = make_mp4(tmp_path / "a.mp4", seconds=1.0)
+    log = []
+    process_file(src, tmp_path / "out", False, 16000, None, collect(log),
+                 output_format="mp3")
+    keys = [k for _, _, k in log]
+    assert keys[0] == "extract_audio"
+    assert "remux" in keys
 
 
 @requires_ffmpeg
 def test_process_file_mp3_produit_les_deux_formats(tmp_path, fake_models):
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: None, output_format="mp3")
+                       noop, output_format="mp3")
     assert Path(res["enhanced_mp3"]).exists()
     assert Path(res["enhanced_wav"]).exists()
     assert res["enhanced_mp3"].endswith("_pyclean-audio.mp3")
@@ -187,7 +229,7 @@ def test_process_file_transcription(tmp_path, fake_models):
     _, tra = fake_models
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: None, transcribe=True)
+                       noop, transcribe=True)
     txt = Path(res["transcript"])
     assert txt.exists()
     assert txt.read_text(encoding="utf-8").strip() == "bonjour le monde"
@@ -200,22 +242,22 @@ def test_process_file_transcription_vide(tmp_path, fake_models):
     tra.text = ""
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: None, transcribe=True)
+                       noop, transcribe=True)
     assert "aucune parole" in Path(res["transcript"]).read_text(encoding="utf-8")
 
 
 @requires_ffmpeg
-def test_process_file_video_copie_le_flux_vidéo(tmp_path, fake_models):
+def test_process_file_video_copies_the_video_stream(tmp_path, fake_models):
     src = make_mp4(tmp_path / "a.mp4", seconds=1.0)
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: None, output_format="mp3")
+                       noop, output_format="mp3")
     assert res["kind"] == "video"
     assert res["output"].endswith(".mp4")
     assert Path(res["output"]).exists()
 
     src_v = next(s for s in streams_of(src) if s["codec_type"] == "video")
     out_v = next(s for s in streams_of(res["output"]) if s["codec_type"] == "video")
-    # -c:v copy : aucun ré-encodage, donc codec et dimensions identiques
+    # -c:v copy: no re-encoding, hence identical codec and dimensions
     assert out_v["codec_name"] == src_v["codec_name"]
     assert out_v["width"] == src_v["width"]
     out_a = next(s for s in streams_of(res["output"]) if s["codec_type"] == "audio")
@@ -231,28 +273,29 @@ def test_process_file_sans_piste_audio(tmp_path, fake_models):
          "testsrc=duration=1:size=160x120:rate=10", "-c:v", "libx264", str(src)],
         check=True, capture_output=True,
     )
-    with pytest.raises(RuntimeError, match="Aucune piste audio"):
-        process_file(src, tmp_path / "out", False, 16000, None, lambda s, p: None)
+    with pytest.raises(RuntimeError, match="No audio track"):
+        process_file(src, tmp_path / "out", False, 16000, None, noop)
 
 
 @requires_ffmpeg
 def test_process_file_refuse_un_fichier_trop_long(tmp_path, fake_models, monkeypatch):
-    """Rejet immédiat (avant toute inférence) quand la durée dépasse la borne."""
+    """Rejected immediately (before any inference) when the duration is over the
+    limit."""
     from app import processor
 
     monkeypatch.setattr(processor, "MAX_DURATION", 2)
     src = make_wav(tmp_path / "long.wav", seconds=3.0)
-    with pytest.raises(RuntimeError, match="trop long"):
-        process_file(src, tmp_path / "out", False, 16000, None, lambda s, p: None)
-    assert fake_models[0].calls == [], "le modèle ne doit pas être appelé"
+    with pytest.raises(RuntimeError, match="too long"):
+        process_file(src, tmp_path / "out", False, 16000, None, noop)
+    assert fake_models[0].calls == [], "the model must not be called"
 
 
 @requires_ffmpeg
 def test_process_file_keep_original_supprime_le_wav(tmp_path, fake_models):
-    """Sans original demandé, le WAV 48 kHz ne reste pas sur le disque."""
+    """Without the original being asked for, the 48 kHz WAV does not stay on disk."""
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     res = process_file(src, tmp_path / "out", False, 16000, None,
-                       lambda s, p: None, keep_original=False)
+                       noop, keep_original=False)
     assert res["original_wav"] is None
     assert not list((tmp_path / "out").glob("*_original.wav"))
     assert Path(res["enhanced_wav"]).exists()
@@ -267,21 +310,21 @@ def test_process_file_annulation_leve_jobcancelled(tmp_path, fake_models):
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
     with pytest.raises(JobCancelled):
         process_file(src, tmp_path / "out", False, 16000, None,
-                     lambda s, p: None, cancel=event)
+                     noop, cancel=event)
 
 
 @requires_ffmpeg
 def test_process_file_reporte_les_options_au_modele(tmp_path, fake_models):
     enh, _ = fake_models
     src = make_wav(tmp_path / "a.wav", seconds=1.0)
-    process_file(src, tmp_path / "out", True, 8000, 3000, lambda s, p: None)
+    process_file(src, tmp_path / "out", True, 8000, 3000, noop)
     call = enh.calls[0]
     assert call["denoise"] is True
     assert call["input_sr"] == 8000
     assert call["cutoff"] == 3000
 
 
-# -------------------------------------------------------- énumération dossier
+# -------------------------------------------------------- folder enumeration
 
 def test_iter_media_files_recursif_et_filtre(tmp_path):
     (tmp_path / "sous").mkdir()
@@ -291,7 +334,7 @@ def test_iter_media_files_recursif_et_filtre(tmp_path):
     (tmp_path / "sous" / "c.zzz").write_bytes(b"")
 
     found = [p.name for p in iter_media_files(tmp_path)]
-    assert found == ["a.wav", "b.MP4"]  # trié, récursif, extensions filtrées
+    assert found == ["a.wav", "b.MP4"]  # sorted, recursive, extensions filtered
 
 
 def test_allowed_ext_couvre_les_formats_du_readme():

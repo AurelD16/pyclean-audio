@@ -1,1 +1,1 @@
-"""Marque le paquet de tests (permet `from .conftest import ...`)."""
+"""Marks the tests package (allows `from .conftest import ...`)."""

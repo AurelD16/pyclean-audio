@@ -1,8 +1,10 @@
-"""Fixtures partagées : ffmpeg factice, modules de modèle factices.
+"""Shared fixtures: fake ffmpeg, fake model modules.
 
-Les tests n'importent jamais torch/LavaSR/NeMo : `app.processor` fait ses imports
-de `enhancer`/`transcriber` *dans* le corps des fonctions, on peut donc injecter
-des modules factices dans sys.modules.
+No **model** is loaded (no LavaSR weights, no NeMo); torch on the other hand is
+imported by almost every test module (through app.main / app.enhancer /
+app.transcriber), which costs ~1 s per file. `app.processor` imports
+`enhancer`/`transcriber` *inside* its functions, so fakes can be injected into
+sys.modules instead of loading the real ones.
 """
 
 import shutil
@@ -20,8 +22,8 @@ requires_ffmpeg = pytest.mark.skipif(
 
 
 class FakeEnhancer:
-    """Remplace LavaEnhancer : copie l'entrée 48 kHz (le pipeline suppose que
-    enhance_wav produit du 48 kHz mono de même durée)."""
+    """Stands in for LavaEnhancer: copies the 48 kHz input (the pipeline assumes
+    enhance_wav produces 48 kHz mono of the same duration)."""
 
     def __init__(self):
         self.calls = []
@@ -41,7 +43,7 @@ class FakeEnhancer:
 
 
 class FakeTranscriber:
-    """Renvoie un Transcript comme le vrai (texte + sous-titres horodatés)."""
+    """Returns a Transcript like the real one (text + timestamped subtitles)."""
 
     def __init__(self, text="bonjour le monde", cues=None):
         self.text = text
@@ -69,10 +71,10 @@ def _install(monkeypatch, name, **attrs):
 
 @pytest.fixture
 def fake_models(monkeypatch):
-    """Installe app.enhancer / app.transcriber factices (aucun torch chargé).
+    """Install fake app.enhancer / app.transcriber modules (no torch loaded).
 
-    Le module de transcription factique réexporte les helpers purs du vrai
-    (render_srt, Transcript) : processor les importe au moment de l'appel.
+    The fake transcription module re-exports the real module's pure helpers
+    (render_srt, Transcript): processor imports them at call time.
     """
     import app.transcriber as real
 
@@ -85,7 +87,7 @@ def fake_models(monkeypatch):
 
 
 def fake_ffmpeg(tmp_path, monkeypatch, script):
-    """Met un exécutable `ffmpeg` factice (script sh) en tête de PATH."""
+    """Puts a fake `ffmpeg` executable (a sh script) first in PATH."""
     import os
 
     bindir = tmp_path / "fakebin"

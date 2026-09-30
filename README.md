@@ -77,7 +77,7 @@ source using the two linked players.
 > Transcription needs an extra dependency (NeMo), which is **not** installed by
 > default because it weighs several GB and pins its own `torch` version.
 > `./run.sh --asr` adds it to the existing `.venv` without recreating it.
-> Until then, the “Transcrire l'audio nettoyé” checkbox is disabled and says why —
+> Until then, the “Transcribe the cleaned audio” checkbox is disabled and says why —
 > see [Transcription](#transcription-optional).
 
 ## Transcription (optional)
@@ -99,7 +99,7 @@ environment — it never recreates `.venv`, so LavaSR stays installed. The
 transcription and cached; preload it at boot with `PYCLEAN_PRELOAD_ASR=1`.
 
 `GET /api/status` reports `transcriber.available`. When it is `false`, the
-checkbox is disabled, the status badge reads “Parakeet non installé”, and the
+checkbox is disabled, the status badge reads “Parakeet not installed”, and the
 API answers **400** instead of accepting a job that would fail on
 `ModuleNotFoundError: nemo`.
 
@@ -128,6 +128,8 @@ original tree structure and subtitles are named `<name>.srt` (without the
 
 ## Command line
 
+English output (no language switch: the page is the multilingual part).
+
 ```bash
 .venv/bin/python -m app.cli musique.mp3 --denoise
 .venv/bin/python -m app.cli video.mkv -o sortie/ --input-sr 8000
@@ -150,12 +152,12 @@ code 1 if anything failed.
 
 ## Whole folders
 
-**Web** — the “Dossier (récursif)” tab: drop a directory (or a subdirectory) on
+**Web** — the “Folder (recursive)” tab: drop a directory (or a subdirectory) on
 the page, or browse for one. Every audio/video file is detected **in all
 subdirectories**. The output format is chosen there (MP3 192 kbit/s by default,
 or uncompressed WAV 48 kHz) and applies to audio files; videos stay MP4. Files
 are processed sequentially, each with its own download link, plus a
-“Télécharger tout (ZIP)” button that bundles the results in the original tree.
+“Download everything (ZIP)” button that bundles the results in the original tree.
 
 **CLI** — pass a directory instead of a file:
 
@@ -171,18 +173,30 @@ are processed sequentially, each with its own download link, plus a
 
 ## Web interface
 
-The UI is currently in French; labels below are quoted as they appear.
-
+- **Two languages**, **English by default**: the two flags (🇬🇧 / 🇫🇷) under the
+  LavaSR badge switch the whole page, including the progress stage, the error
+  messages, the result list and the download buttons. The choice is remembered
+  in the browser (`localStorage`); a fresh browser therefore starts in English.
 - **Drag & drop** a single file, or a whole folder (recursive directory
   enumeration via `webkitGetAsEntry` / `webkitdirectory`).
-- **Options**: “Réduire le bruit”, input bandwidth (8/16/24 kHz), “Cutoff (Hz,
-  avancé)”, output format (folder mode), and “Transcrire l'audio nettoyé”
+- **Options**: “Reduce noise”, input bandwidth (8/16/24 kHz), “Cutoff (Hz,
+  advanced)”, output format (folder mode), and “Transcribe the cleaned audio”
   (off by default; disabled with an explanation when NeMo is not installed).
 - **A/B comparison**: the two players (source / enhanced) are **linked** — play,
-  pause and seek are mirrored, and the “▶ Origine” / “▶ Amélioré” buttons switch
-  versions at the same timecode. Untick “lié” to decouple them.
-- **Queue position**, “Annuler le traitement”, “Supprimer les résultats”,
-  polling of job progress, and a per-file result list with a ZIP download.
+  pause and seek are mirrored, and the “▶ Source” / “▶ Enhanced” buttons switch
+  versions at the same timecode. Untick “linked” to decouple them.
+- **Queue position**, “Cancel processing”, “Delete results”, polling of job
+  progress, and a per-file result list with a ZIP download.
+
+Switching language retranslates what is already on screen (results included)
+without rebuilding the page, so playback is not interrupted.
+
+The page never displays the server's wording directly: the API sends a **key**
+plus its parameters (`stage_key` / `stage_args`, `error_code` / `error_params`,
+and `code` / `params` in error bodies) and the page translates them, falling
+back to the server's English text (`stage`, `error`, `detail`) for a key it does
+not know. A client that ignores those fields — `curl`, a script — simply reads
+the English wording.
 
 ## Configuration
 
@@ -221,10 +235,10 @@ request waits in the queue and the page shows how many jobs are ahead of it
 - **409** when deleting a job that is still running (cancel it first), or when
   cancelling one that has already finished.
 
-A running job can be **cancelled** (button “Annuler le traitement”): work stops
+A running job can be **cancelled** (button “Cancel processing”): work stops
 at the next checkpoint — inference block, transcription chunk, ffmpeg progress
-line — and the job folder is removed. Once finished, “Supprimer les résultats”
-frees the job and its files.
+line — and the job folder is removed. Once finished, “Delete results” frees the
+job and its files.
 
 Uploads, WAV/MP3/MP4 results and ZIPs are **purged after 6 h**, and
 **everything is wiped on restart** (jobs live in memory, so the API would
@@ -274,6 +288,11 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 - Transcription requires `./run.sh --asr`; without it the option is refused up
   front (400) rather than failing mid-job.
 - One job at a time, and one model resident on the GPU at a time.
+- The web page is **English by default**, French as a second language (the two
+  flags under the LavaSR badge). Everything else — server messages, command
+  line, documentation — is English, with no flag to switch. The transcript file
+  is French when the model recognises nothing (`(aucune parole détectée)`); that
+  is an artefact of the file, not of the interface.
 - The SRT is only written if the model returns timestamps; it is never muxed
   into the MP4.
 - `HEAD` requests return 404 on the FastAPI routes (no browser impact: the page
@@ -335,7 +354,8 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | `app/enhancer.py` | `LavaEnhance2` wrapper, 16 kHz windowed reader, block planning |
 | `app/transcriber.py` | Parakeet/NeMo wrapper, chunk planning, SRT rendering |
 | `app/cancel.py` | cooperative cancellation + global GPU lock |
+| `app/messages.py` | message keys (`STAGES`, `ERRORS`), English wording, `MediaError` |
 | `app/config.py` | limits and retention, read from the environment |
-| `app/cli.py` | command line interface |
-| `static/index.html` | the whole web UI (drag & drop, A/B, downloads) |
+| `app/cli.py` | command line interface (English output, no translation) |
+| `static/index.html` | the whole web UI (drag & drop, A/B, downloads) + its EN/FR dictionary |
 | `tests/` | pytest suite |

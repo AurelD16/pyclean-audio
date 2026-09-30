@@ -1,7 +1,7 @@
-"""Configuration par variables d'environnement — toutes optionnelles.
+"""Configuration through environment variables — all optional.
 
-Une valeur absente ou illisible retombe silencieusement sur le défaut : une
-mauvaise variable ne doit jamais empêcher le serveur de démarrer.
+A missing or unreadable value silently falls back to the default: a bad
+variable must never stop the server from starting.
 """
 
 import os
@@ -22,18 +22,18 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "oui", "yes", "on")
 
 
-# --- bornes de traitement -----------------------------------------------------
-MAX_SIZE = env_int("PYCLEAN_MAX_SIZE", 2 * 1024**3)        # octets, par fichier
-MAX_DURATION = env_int("PYCLEAN_MAX_DURATION", 10_000)     # secondes (~2 h 47)
-MAX_FOLDER_FILES = env_int("PYCLEAN_MAX_FILES", 500)       # fichiers par dossier
-MAX_FOLDER_TOTAL = env_int("PYCLEAN_MAX_FOLDER_TOTAL", 8 * 1024**3)  # octets
-FFMPEG_TIMEOUT = env_int("PYCLEAN_FFMPEG_TIMEOUT", 0) or None  # 0 = illimité
+# --- processing limits -------------------------------------------------------
+MAX_SIZE = env_int("PYCLEAN_MAX_SIZE", 2 * 1024**3)        # bytes, per file
+MAX_DURATION = env_int("PYCLEAN_MAX_DURATION", 10_000)     # seconds (~2 h 47)
+MAX_FOLDER_FILES = env_int("PYCLEAN_MAX_FILES", 500)       # files per folder
+MAX_FOLDER_TOTAL = env_int("PYCLEAN_MAX_FOLDER_TOTAL", 8 * 1024**3)  # bytes
+FFMPEG_TIMEOUT = env_int("PYCLEAN_FFMPEG_TIMEOUT", 0) or None  # 0 = unlimited
 
-# --- cycle de vie des résultats ----------------------------------------------
-JOB_TTL = env_int("PYCLEAN_JOB_TTL", 6 * 3600)   # secondes avant purge (6 h)
-JOB_MAX = env_int("PYCLEAN_JOB_MAX", 200)        # jobs conservés en mémoire
-PURGE_INTERVAL = env_int("PYCLEAN_PURGE_INTERVAL", 60)  # balayage, secondes
-QUEUE_MAX = env_int("PYCLEAN_QUEUE_MAX", 20)     # demandes en attente max
+# --- results lifecycle ------------------------------------------------------
+JOB_TTL = env_int("PYCLEAN_JOB_TTL", 6 * 3600)   # seconds before purge (6 h)
+JOB_MAX = env_int("PYCLEAN_JOB_MAX", 200)        # jobs kept in memory
+PURGE_INTERVAL = env_int("PYCLEAN_PURGE_INTERVAL", 60)  # sweep, seconds
+QUEUE_MAX = env_int("PYCLEAN_QUEUE_MAX", 20)     # max waiting requests
 
-# --- modèles ------------------------------------------------------------------
-PRELOAD_ASR = env_flag("PYCLEAN_PRELOAD_ASR", False)  # charger Parakeet au boot
+# --- models -------------------------------------------------------------------
+PRELOAD_ASR = env_flag("PYCLEAN_PRELOAD_ASR", False)  # load Parakeet at boot

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .cancel import JobCancelled, raise_if_cancelled
@@ -26,6 +26,7 @@ from .config import (
     QUEUE_MAX,
 )
 from .enhancer import get_enhancer
+from .messages import MediaError, error_text, jsonable, stage_text
 from .processor import ALLOWED_EXT, process_file
 from .transcriber import get_transcriber, is_available
 
@@ -36,49 +37,90 @@ DATA.mkdir(parents=True, exist_ok=True)
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
-# Un seul traitement à la fois : un worker unique consomme la file, donc
-# l'inférence et les phases ffmpeg d'un job n'ont jamais lieu en parallèle
-# (plusieurs ffmpeg ne feraient de toute façon que se disputer le disque).
+# One job at a time: a single worker consumes the queue, so a job's inference
+# and ffmpeg phases never overlap (several ffmpeg would only fight over the
+# disk anyway).
 QUEUE = queue.Queue(maxsize=QUEUE_MAX)
 WORKER_LOCK = threading.Lock()
 WORKER_STARTED = False
 
 ACTIVE_STATES = ("queued", "running")
 
-# clés de process_file() qui deviennent des artefacts téléchargeables
+# process_file() keys that become downloadable artifacts
 ARTIFACT_KEYS = frozenset({
     "original_wav", "enhanced_wav", "enhanced_mp3", "transcript", "transcript_srt",
 })
 
 
-def _stage(job, stage, progress, done=False):
+class ApiError(HTTPException):
+    """An HTTP error that carries a translatable key next to its wording.
+
+    `detail` is the English wording (what a client that does not translate
+    reads, and what the CLI prints); `code` and `params` are added to the body
+    by `_api_error_handler` so the UI can translate it.
+    """
+
+    def __init__(self, status_code: int, code: str, **params):
+        super().__init__(status_code, error_text(code, params))
+        self.code = code
+        self.params = {k: jsonable(v) for k, v in params.items()}
+
+
+def _stage(job, stage, progress, done=False, key=None, args=None):
     with JOBS_LOCK:
-        job["stage"] = stage
-        job["progress"] = round(min(max(progress, 0.0), 1.0), 3)
-        if done:
-            job["state"] = "done"
+        _stage_locked(job, stage, progress, done, key, args)
+
+
+def _stage_locked(job, stage, progress, done=False, key=None, args=None):
+    """`_stage` without the lock: to be used under JOBS_LOCK only.
+
+    `key` and `args` are the translatable form of `stage`: the UI shows its own
+    translation and falls back to `stage` when it does not know the key.
+    """
+    job["stage"] = stage
+    job["stage_key"] = key
+    job["stage_args"] = args or {}
+    job["progress"] = round(min(max(progress, 0.0), 1.0), 3)
+    if done:
+        job["state"] = "done"
+
+
+def _fail(job, exc: Exception):
+    """Moves a job (or a folder entry) to the error state, translatable key
+    included.
+
+    To be called under JOBS_LOCK. An exception that is not a MediaError (a bug,
+    CUDA, a third-party library) has no code: the UI then shows `error` as is.
+    """
+    job["state"] = "error"
+    job["error"] = str(exc)
+    job["error_code"] = getattr(exc, "code", None)
+    job["error_params"] = getattr(exc, "params", None) or {}
+    job["stage"] = stage_text("error")
+    job["stage_key"] = "error"
+    job["stage_args"] = {}
 
 
 def _public_artifacts(artifacts):
-    """Ne renvoie que les artefacts réellement produits, avec leur nom de
-    fichier : le client construit ses URLs à partir de la clé, le chemin
-    serveur n'a rien à faire dans la réponse."""
+    """Return only the artifacts actually produced, with their file name: the
+    client builds its URLs from the key, server paths have no business in the
+    response."""
     return {k: Path(v).name for k, v in (artifacts or {}).items() if v}
 
 
 def _snapshot(job):
-    """Copie du job sûre à sérialiser.
+    """A copy of the job that is safe to serialise.
 
-    Le thread de traitement continue de muter `job` pendant que FastAPI encode
-    la réponse : sans copie des dictionnaires imbriqués, un `artifacts` qui
-    grandit au milieu de l'encodage fait échouer la requête
-    (« dictionary changed size during iteration »). Les clés internes
-    (`_cancel`, `_src`…) et les chemins serveur ne sont jamais exposés.
+    The worker thread keeps mutating `job` while FastAPI encodes the response:
+    without copying the nested dicts, an `artifacts` that grows in the middle
+    of the encoding fails the request (“dictionary changed size during
+    iteration”). Internal keys (`_cancel`, `_src`…) and server paths are never
+    exposed.
     """
     snap = {k: v for k, v in job.items() if not k.startswith("_")}
     snap["artifacts"] = _public_artifacts(job.get("artifacts"))
     if "zip" in snap:
-        # le client construit l'URL à partir de l'id : pas besoin du chemin
+        # the client builds the URL from the id: the path is not needed
         snap["zip"] = bool(snap["zip"])
     files = job.get("files")
     if files is not None:
@@ -91,10 +133,10 @@ def _snapshot(job):
     return snap
 
 
-# ---------------------------------------------------------------- rétention
+# ---------------------------------------------------------------- retention
 
 def _drop_job(job_id):
-    """Oublie un job et supprime tous ses fichiers. Vrai si le job existait."""
+    """Forget a job and delete all its files. True if the job existed."""
     with JOBS_LOCK:
         job = JOBS.pop(job_id, None)
     if job is None:
@@ -104,7 +146,7 @@ def _drop_job(job_id):
 
 
 def _purge_expired():
-    """Supprime les jobs terminés dont le TTL est écoulé (jamais ceux en cours)."""
+    """Delete finished jobs whose TTL has expired (never running ones)."""
     now = time.time()
     with JOBS_LOCK:
         stale = [jid for jid, j in JOBS.items()
@@ -114,8 +156,8 @@ def _purge_expired():
 
 
 def _purge_orphans():
-    """Au démarrage, le registre est vide : tout ce qui reste sur disque est
-    injoignable (l'API répondrait 404). On libère immédiatement."""
+    """At startup the registry is empty: whatever is left on disk is
+    unreachable (the API would answer 404). Free it right away."""
     n = 0
     if not DATA.exists():
         return 0
@@ -127,8 +169,8 @@ def _purge_orphans():
 
 
 def _make_room():
-    """Garde le registre sous JOB_MAX en écartant les jobs terminés les plus
-    anciens ; 503 seulement si la file est entièrement composée de jobs actifs."""
+    """Keep the registry under JOB_MAX by evicting the oldest finished jobs;
+    503 only if the registry is entirely made of active jobs."""
     with JOBS_LOCK:
         if len(JOBS) < JOB_MAX:
             return
@@ -140,8 +182,7 @@ def _make_room():
         _drop_job(job["id"])
     with JOBS_LOCK:
         if len(JOBS) >= JOB_MAX:
-            raise HTTPException(
-                503, f"Trop de traitements en cours ou en attente (max {JOB_MAX}).")
+            raise ApiError(503, "too_many_jobs", max=JOB_MAX)
 
 
 def _register(job):
@@ -156,15 +197,17 @@ def _register(job):
 def _finish_cancelled(job):
     with JOBS_LOCK:
         job["state"] = "cancelled"
-        job["stage"] = "Annulé"
+        job["stage"] = stage_text("cancelled")
+        job["stage_key"] = "cancelled"
+        job["stage_args"] = {}
         job["error"] = None
     shutil.rmtree(DATA / job["id"], ignore_errors=True)
 
 
 def _worker():
-    """Consommateur unique de la file : un traitement GPU à la fois.
+    """The queue's single consumer: one GPU job at a time.
 
-    Un `None` dans la file arrête le worker (arrêt du serveur, tests).
+    A `None` in the queue stops the worker (server shutdown, tests).
     """
     while True:
         item = QUEUE.get()
@@ -173,13 +216,11 @@ def _worker():
         target, args, job = item
         try:
             target(*args)
-        except Exception as e:  # filet de sécurité : un job qui plante ne doit
-            # pas disparaître silencieusement de l'interface
+        except Exception as e:  # safety net: a job that crashes must not
+            # silently vanish from the UI
             with JOBS_LOCK:
                 if job["state"] in ACTIVE_STATES:
-                    job["state"] = "error"
-                    job["error"] = str(e)
-                    job["stage"] = "Erreur"
+                    _fail(job, e)
 
 
 def _start_worker():
@@ -191,27 +232,26 @@ def _start_worker():
 
 
 def _enqueue(job, target, args):
-    """Place un job dans la file et renvoie sa position (0 = prochain).
+    """Queue a job and return its position (0 = next).
 
-    Le job est passé en premier argument de la cible (elle en a besoin pour
-    rapporter la progression) et mémorisé à part pour que le worker puisse
-    signaler un échec inattendu.
+    The job is passed as the first argument of the target (it needs it to
+    report progress) and remembered separately so the worker can report an
+    unexpected failure.
     """
     _start_worker()
     try:
         QUEUE.put_nowait((target, (job, *args), job))
     except queue.Full as exc:
-        _drop_job(job["id"])  # l'upload ne sert plus à rien
-        raise HTTPException(
-            429,
-            f"File d'attente pleine ({QUEUE_MAX} traitements) : réessayez dans un instant.",
+        _drop_job(job["id"])  # the upload is of no use any more
+        raise ApiError(
+            429, "queue_full", max=QUEUE_MAX,
         ) from exc
     with JOBS_LOCK:
         job["queue_position"] = max(0, QUEUE.qsize() - 1)
     return job["queue_position"]
 
 
-# ------------------------------------------------------------------ traitement
+# ------------------------------------------------------------------ processing
 
 def _run_job(job, up, denoise, input_sr, cutoff, transcribe, cancel):
     up = Path(up)
@@ -220,27 +260,40 @@ def _run_job(job, up, denoise, input_sr, cutoff, transcribe, cancel):
     outdir = up.parent / "out"
     try:
         raise_if_cancelled(cancel)
-        # fichier seul : les deux formats (WAV + MP3) sont proposés au téléchargement
-        res = process_file(up, outdir, denoise, input_sr, cutoff,
-                           lambda s, p: _stage(job, s, p), output_format="mp3",
-                           transcribe=transcribe, cancel=cancel, keep_original=True)
+        # single file: both formats (WAV + MP3) are offered for download
+        res = process_file(
+            up, outdir, denoise, input_sr, cutoff,
+            lambda s, p, k=None, a=None: _stage(job, s, p, key=k, args=a),
+            output_format="mp3", transcribe=transcribe, cancel=cancel,
+            keep_original=True,
+        )
         job["kind"] = res["kind"]
         job["artifacts"] = {k: v for k, v in res.items()
                             if k in ARTIFACT_KEYS and v}
         if res["output"]:
             job["artifacts"]["video"] = res["output"]
-        _stage(job, "Terminé", 1.0, done=True)
+        _stage(job, stage_text("done"), 1.0, done=True, key="done")
     except JobCancelled:
         _finish_cancelled(job)
     except Exception as e:
         with JOBS_LOCK:
-            job["state"] = "error"
-            job["error"] = str(e)
-            job["stage"] = "Erreur"
+            _fail(job, e)
+
+
+def _file_stage(index, total, name, text, key, args):
+    """(text, key, params) of the current stage of a folder job.
+
+    The inner stage is nested in the params (`inner_key`/`inner_args`): the UI
+    translates it too, otherwise the “File 2/12 — a.mp3: …” line would stay
+    half in the server's language.
+    """
+    params = {"index": index, "total": total, "name": name,
+              "inner_key": key, "inner_args": args or {}}
+    return stage_text("file_step", {**params, "inner": text}), "file_step", params
 
 
 def _safe_relpath(name: str):
-    """Chemins relatifs fiables (pas de '..', pas d'absolu) depuis un nom multipart."""
+    """Reliable relative paths (no '..', no absolute) from a multipart name."""
     name = (name or "").replace("\\", "/").lstrip("/")
     parts = [p for p in name.split("/") if p and p not in (".", "..")]
     return Path(*parts) if parts else None
@@ -255,41 +308,45 @@ def _run_folder_job(job, entries, sources, denoise, input_sr, cutoff,
         src, outdir = sources[i]
         with JOBS_LOCK:
             ent["state"] = "running"
-            job["stage"] = f"Fichier {i + 1}/{total} — {ent['relpath']}"
+            text, key, args = _file_stage(i + 1, total, ent["relpath"], "", None, None)
+            _stage_locked(job, text, job["progress"], key=key, args=args)
 
-        def cb(stage, p, _i=i, _ent=ent):
+        def cb(stage, p, key=None, args=None, _i=i, _ent=ent):
             with JOBS_LOCK:
                 _ent["stage"] = stage
+                _ent["stage_key"] = key
+                _ent["stage_args"] = args or {}
                 _ent["progress"] = round(min(max(p, 0.0), 1.0), 3)
-                job["stage"] = f"Fichier {_i + 1}/{total} — {_ent['relpath']} : {stage}"
-                job["progress"] = round(min((_i + p) / total, 1.0), 3)
+                text, key, sparams = _file_stage(
+                    _i + 1, total, _ent["relpath"], stage, key, args)
+                _stage_locked(job, text, (_i + p) / total, key=key, args=sparams)
 
         try:
             raise_if_cancelled(cancel)
             res = process_file(Path(src), Path(outdir), denoise, input_sr, cutoff,
                                cb, output_format=output_format,
                                transcribe=transcribe, cancel=cancel,
-                               # l'original ne sert qu'à la comparaison A/B, absente
-                               # du listing dossier : inutile de le garder sur disque
+                               # the original only feeds the A/B comparison, which the
+                               # folder listing has no use for: no need to keep it
                                keep_original=False)
             ent["kind"] = res["kind"]
-            # seules les clés réellement produites (pas d'original en dossier)
+            # only the keys actually produced (no original in folder mode)
             ent["artifacts"] = {k: v for k, v in res.items()
                                 if k in ARTIFACT_KEYS and v}
             if res["output"]:
                 ent["artifacts"]["video"] = res["output"]
             with JOBS_LOCK:
                 ent["state"] = "done"
-                ent["stage"] = "Terminé"
+                ent["stage"] = stage_text("done")
+                ent["stage_key"] = "done"
+                ent["stage_args"] = {}
                 ent["progress"] = 1.0
         except JobCancelled:
             _finish_cancelled(job)
             return
         except Exception as e:
             with JOBS_LOCK:
-                ent["state"] = "error"
-                ent["error"] = str(e)
-                ent["stage"] = "Erreur"
+                _fail(ent, e)
 
     done = sum(1 for e in entries if e["state"] == "done")
     zip_path = None
@@ -299,23 +356,22 @@ def _run_folder_job(job, entries, sources, denoise, input_sr, cutoff,
         except Exception:
             zip_path = None
     with JOBS_LOCK:
-        job["progress"] = 1.0
         if done:
-            job["state"] = "done"
-            job["stage"] = f"Terminé — {done}/{total} fichiers"
+            _stage_locked(job, stage_text("folder_done", {"done": done, "total": total}),
+                          1.0, done=True, key="folder_done",
+                          args={"done": done, "total": total})
             if zip_path:
                 job["zip"] = zip_path
         else:
-            job["state"] = "error"
-            job["error"] = "Aucun fichier traité avec succès."
-            job["stage"] = "Erreur"
+            _fail(job, MediaError("no_file_done"))
 
 
 def _build_folder_zip(job, entries, output_format="mp3"):
-    """Archive ZIP (sans compression, fichiers déjà compressés) des résultats réussis.
+    """ZIP archive (stored, the files are already compressed) of the successful
+    results.
 
-    Le format audio est celui choisi par l'utilisateur (output_format) ;
-    les vidéos sont toujours en MP4."""
+    The audio format is the one the user picked (output_format); videos are
+    always MP4."""
     zip_path = DATA / job["id"] / "results.zip"
     seen = {}
     added = 0
@@ -325,8 +381,8 @@ def _build_folder_zip(job, entries, output_format="mp3"):
                 continue
             rel = Path(ent["relpath"])
             prefix = "" if str(rel.parent) == "." else str(rel.parent) + "/"
-            # même stem deux fois dans un même sous-dossier (ex. a.mp3 + a.mkv) :
-            # on suffixe _2, _3… pour ne pas écraser les entrées du zip
+            # same stem twice in one subfolder (e.g. a.mp3 + a.mkv): suffix
+            # _2, _3… so zip entries do not overwrite each other
             key = (prefix, rel.stem.lower())
             n = seen.get(key, 0) + 1
             seen[key] = n
@@ -384,6 +440,19 @@ async def lifespan(_app):
 app = FastAPI(title="pyclean-audio", lifespan=lifespan)
 
 
+@app.exception_handler(ApiError)
+async def _api_error_handler(_request, exc: ApiError):
+    """Adds `code`/`params` to the error body, next to `detail`.
+
+    FastAPI's default handler only serialises `detail`: without this one the UI
+    would have nothing to translate.
+    """
+    body = {"detail": exc.detail, "code": exc.code}
+    if exc.params:
+        body["params"] = exc.params
+    return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers)
+
+
 @app.get("/api/status")
 def status():
     s = get_enhancer().status()
@@ -399,29 +468,25 @@ def status():
 
 def _check_input_sr(input_sr):
     if input_sr not in (8000, 16000, 24000):
-        raise HTTPException(400, "input_sr doit être 8000, 16000 ou 24000")
+        raise ApiError(400, "bad_input_sr")
 
 
 def _check_transcribe(transcribe: bool) -> None:
-    """Refuse la transcription si NeMo n'est pas installé.
+    """Refuses transcription when NeMo is not installed.
 
-    Sans cela, la demande serait acceptée puis le job échouerait en cours de
-    route sur un `ModuleNotFoundError: nemo` ; l'interface désactive déjà la
-    case dans ce cas, mais un client API peut ignorer l'état.
+    Without this the request would be accepted and the job would then fail
+    mid-flight on `ModuleNotFoundError: nemo`; the UI already disables the
+    checkbox in that case, but an API client may ignore the state.
     """
     if transcribe and not is_available():
-        raise HTTPException(
-            400,
-            "Transcription indisponible : nemo_toolkit[asr] n'est pas installé. "
-            "Lancez ./run.sh --asr puis redémarrez le serveur.",
-        )
+        raise ApiError(400, "transcribe_unavailable")
 
 
 async def _save_upload(upload: UploadFile, dest: Path, budget: list[int]):
-    """Écrit un upload par morceaux en contrôlant la taille.
+    """Write an upload in chunks, checking its size.
 
-    `budget` est une liste à un élément [octets déjà écrits sur la demande] :
-    la limite est ainsi partagée entre tous les fichiers d'un même envoi.
+    `budget` is a one-element list [bytes already written for this request], so
+    the limit is shared across all the files of a single submission.
     """
     written = 0
     with open(dest, "wb") as fh:
@@ -431,13 +496,13 @@ async def _save_upload(upload: UploadFile, dest: Path, budget: list[int]):
                 break
             written += len(chunk)
             if written > MAX_SIZE:
-                raise HTTPException(413, f"Fichier trop volumineux (2 Go max) : {dest.name}")
+                raise ApiError(413, "file_too_large", name=dest.name)
             budget[0] += len(chunk)
             if budget[0] > MAX_FOLDER_TOTAL:
-                raise HTTPException(413, "Dossier trop volumineux au total")
+                raise ApiError(413, "folder_too_large")
             fh.write(chunk)
     if written == 0:
-        raise HTTPException(400, f"Fichier vide : {dest.name}")
+        raise ApiError(400, "empty_file", name=dest.name)
     return written
 
 
@@ -447,10 +512,10 @@ async def enhance(file: UploadFile = File(...),
                   input_sr: int = Form(16000),
                   cutoff: int = Form(None),
                   transcribe: bool = Form(False)):
-    filename = file.filename or "fichier"
+    filename = file.filename or "file"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXT:
-        raise HTTPException(400, f"Format non pris en charge : {ext}")
+        raise ApiError(400, "unsupported_format", ext=ext)
     _check_input_sr(input_sr)
     _check_transcribe(transcribe)
     _make_room()
@@ -458,12 +523,12 @@ async def enhance(file: UploadFile = File(...),
     job_id = uuid.uuid4().hex[:12]
     jobdir = DATA / job_id
     jobdir.mkdir(parents=True, exist_ok=True)
-    safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).stem)[:80] or "fichier"
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).stem)[:80] or "file"
     up = jobdir / f"{safe_stem}{ext}"
     try:
         await _save_upload(file, up, [0])
     except Exception:
-        shutil.rmtree(jobdir, ignore_errors=True)  # pas de résidu d'upload avorté
+        shutil.rmtree(jobdir, ignore_errors=True)  # no leftover from a failed upload
         raise
 
     job = _register({
@@ -471,9 +536,13 @@ async def enhance(file: UploadFile = File(...),
         "filename": filename,
         "stem": Path(filename).stem,
         "state": "queued",
-        "stage": "En file d'attente…",
+        "stage": stage_text("queued"),
+        "stage_key": "queued",
+        "stage_args": {},
         "progress": 0.0,
         "error": None,
+        "error_code": None,
+        "error_params": {},
         "kind": None,
         "artifacts": {},
         "queue_position": 0,
@@ -490,19 +559,19 @@ async def enhance_folder(files: list[UploadFile] = File(...),
                          cutoff: int = Form(None),
                          output_format: str = Form("mp3"),
                          transcribe: bool = Form(False)):
-    """Traite un dossier entier (fichiers envoyés avec leur chemin relatif).
+    """Process a whole folder (files are sent with their relative path).
 
-    output_format : format de sortie audio, "mp3" (défaut) ou "wav".
-    Les vidéos restent en MP4 dans tous les cas.
-    transcribe : ajoute une transcription Parakeet (TXT + SRT) de l'audio nettoyé."""
+    output_format: audio output format, "mp3" (default) or "wav". Videos stay
+    MP4 either way.
+    transcribe: adds a Parakeet transcript (TXT + SRT) of the cleaned audio."""
     _check_input_sr(input_sr)
     _check_transcribe(transcribe)
     if output_format not in ("wav", "mp3"):
-        raise HTTPException(400, "output_format doit être wav ou mp3")
+        raise ApiError(400, "bad_output_format")
     if not files:
-        raise HTTPException(400, "Aucun fichier reçu")
+        raise ApiError(400, "no_files")
     if len(files) > MAX_FOLDER_FILES:
-        raise HTTPException(400, f"Trop de fichiers (max {MAX_FOLDER_FILES})")
+        raise ApiError(400, "too_many_files", max=MAX_FOLDER_FILES)
     _make_room()
 
     job_id = uuid.uuid4().hex[:12]
@@ -516,22 +585,22 @@ async def enhance_folder(files: list[UploadFile] = File(...),
     budget = [0]
     try:
         for f in files:
-            raw = f.filename or "fichier"
+            raw = f.filename or "file"
             rel = _safe_relpath(raw)
             if rel is None:
-                raise HTTPException(400, f"Nom de fichier invalide : {raw}")
+                raise ApiError(400, "bad_filename", name=raw)
             if rel.suffix.lower() not in ALLOWED_EXT:
-                continue  # filtrage déjà côté client ; on ignore le reste
+                continue  # the client already filters; ignore the rest
             up = jobdir / "uploads" / rel
             up.parent.mkdir(parents=True, exist_ok=True)
             try:
                 await _save_upload(f, up, budget)
-            except HTTPException as e:
-                if "vide" in str(e.detail):
+            except ApiError as e:
+                if e.code == "empty_file":  # an empty file is skipped, not fatal
                     up.unlink(missing_ok=True)
                     continue
                 raise
-            # collisions de stem dans le même sous-dossier : suffixe _2, _3…
+            # stem collisions in the same subfolder: suffix _2, _3…
             key = (str(rel.parent), rel.stem.lower())
             n = seen.get(key, 0) + 1
             seen[key] = n
@@ -546,9 +615,13 @@ async def enhance_folder(files: list[UploadFile] = File(...),
                 "relpath": str(rel),
                 "stem": stem,
                 "state": "queued",
-                "stage": "En file d'attente…",
+                "stage": stage_text("queued"),
+                "stage_key": "queued",
+                "stage_args": {},
                 "progress": 0.0,
                 "error": None,
+                "error_code": None,
+                "error_params": {},
                 "kind": None,
                 "artifacts": {},
             })
@@ -559,17 +632,21 @@ async def enhance_folder(files: list[UploadFile] = File(...),
 
     if not entries:
         shutil.rmtree(jobdir, ignore_errors=True)
-        raise HTTPException(400, "Aucun fichier audio/vidéo pris en charge dans le dossier")
+        raise ApiError(400, "no_media_in_folder")
 
     job = _register({
         "id": job_id,
         "kind": "folder",
-        "filename": f"{len(entries)} fichiers (dossier)",
+        "filename": f"{len(entries)} files (folder)",
         "stem": None,
         "state": "queued",
-        "stage": f"Dossier : {len(entries)} fichiers en file d'attente…",
+        "stage": stage_text("folder_queued", {"count": len(entries)}),
+        "stage_key": "folder_queued",
+        "stage_args": {"count": len(entries)},
         "progress": 0.0,
         "error": None,
+        "error_code": None,
+        "error_params": {},
         "output_format": output_format,
         "files": entries,
         "queue_position": 0,
@@ -585,33 +662,33 @@ def get_job(job_id: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
-            raise HTTPException(404, "Job introuvable")
+            raise ApiError(404, "job_not_found")
         return _snapshot(job)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str):
-    """Interrompt un traitement : le worker s'arrête au prochain point de contrôle
-    (bloc d'inférence, tranche de transcription, ligne de progression ffmpeg)."""
+    """Interrupts a job: the worker stops at the next checkpoint (inference
+    block, transcription chunk, ffmpeg progress line)."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
-            raise HTTPException(404, "Job introuvable")
+            raise ApiError(404, "job_not_found")
         if job["state"] not in ACTIVE_STATES:
-            raise HTTPException(409, "Le traitement est déjà terminé.")
+            raise ApiError(409, "job_already_done")
         job["_cancel"].set()
     return {"ok": True, "job_id": job_id}
 
 
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
-    """Oublie le job et supprime ses fichiers (uploads, résultats, ZIP)."""
+    """Forget the job and delete its files (uploads, results, ZIP)."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
-            raise HTTPException(404, "Job introuvable")
+            raise ApiError(404, "job_not_found")
         if job["state"] in ACTIVE_STATES:
-            raise HTTPException(409, "Traitement en cours : annulez-le d'abord.")
+            raise ApiError(409, "job_running")
     _drop_job(job_id)
     return {"ok": True, "job_id": job_id}
 
@@ -628,18 +705,18 @@ DOWNLOADS = {
 
 @app.get("/api/jobs/{job_id}/file/{index}/{name}")
 def get_job_file(job_id: str, index: int, name: str):
-    """Téléchargement d'un artefact d'un fichier précis d'un job « dossier »."""
+    """Download an artifact of one specific file of a folder job."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if job is None or "files" not in job:
-        raise HTTPException(404, "Job introuvable")
+        raise ApiError(404, "job_not_found")
     files = job["files"]
     if not (0 <= index < len(files)) or name not in DOWNLOADS:
-        raise HTTPException(404, "Fichier introuvable")
+        raise ApiError(404, "file_not_found")
     ent = files[index]
     path = ent["artifacts"].get(name)
     if not path or not Path(path).exists():
-        raise HTTPException(404, "Fichier introuvable")
+        raise ApiError(404, "file_not_found")
     fname, media = DOWNLOADS[name]
     return FileResponse(
         path, media_type=media,
@@ -649,14 +726,14 @@ def get_job_file(job_id: str, index: int, name: str):
 
 @app.get("/api/jobs/{job_id}/zip")
 def get_job_zip(job_id: str):
-    """Archive ZIP de tous les résultats d'un job « dossier »."""
+    """ZIP archive of every result of a folder job."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if job is None or job.get("kind") != "folder":
-        raise HTTPException(404, "Job introuvable")
+        raise ApiError(404, "job_not_found")
     zip_path = job.get("zip")
     if not zip_path or not Path(zip_path).exists():
-        raise HTTPException(404, "Archive indisponible")
+        raise ApiError(404, "zip_unavailable")
     return FileResponse(
         zip_path, media_type="application/zip", filename="pyclean-audio_dossier.zip",
     )
@@ -667,10 +744,10 @@ def get_file(job_id: str, name: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if job is None or name not in DOWNLOADS:
-        raise HTTPException(404, "Fichier introuvable")
+        raise ApiError(404, "file_not_found")
     path = job["artifacts"].get(name)
     if not path or not Path(path).exists():
-        raise HTTPException(404, "Fichier introuvable")
+        raise ApiError(404, "file_not_found")
     fname, media = DOWNLOADS[name]
     return FileResponse(
         path, media_type=media,

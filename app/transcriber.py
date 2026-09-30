@@ -17,23 +17,23 @@ from .cancel import raise_if_cancelled
 
 MODEL_REPO = "nvidia/parakeet-tdt-0.6b-v3"
 NEMO_FILENAME = "parakeet-tdt-0.6b-v3.nemo"
-TARGET_SR = 16000   # le modèle consomme 16 kHz mono
-CHUNK_SEC = 30      # le checkpoint est entraîné sur des énoncés de max_duration=40 s
-                    # (dans model_config.yaml) et se dégrade au-delà : mesuré sur le
-                    # même audio (contrôle bit à bit de l'audio amélioré), en bloc de
-                    # 300 s le premier mot sort à 51 s et le texte est condensé ; en
-                    # 60 s on perd encore 16 s en tête et ~16 s en queue ; en 30 s les
-                    # deux extrémités sont propres. Un blob de 30 s reste sous la
-                    # limite d'entraînement, le pic VRAM est ~5× plus bas qu'à 300 s.
-OVERLAP_SEC = 10    # contexte lu en amont de chaque bloc, jeté ensuite : le début
-                    # d'un blob est sa zone la moins fiable (jusqu'à 6,5 s de blanc
-                    # mesurés en 30 s), on le prend chez le bloc précédent, qui le
-                    # transcrit en fin de blob. Doit rester ≥ ce blanc, sinon la
-                    # jointure perd les premiers mots du bloc suivant.
-SRT_MAX_CHARS = 42  # largeur d'un sous-titre lisible (2 lignes max)
-SRT_MAX_SEC = 6.0   # durée max d'un sous-titre
+TARGET_SR = 16000   # the model consumes 16 kHz mono
+CHUNK_SEC = 30      # the checkpoint is trained on utterances of max_duration=40 s
+                    # (model_config.yaml) and degrades past it: measured on the same
+                    # audio (enhanced audio checked bit for bit), with 300 s blocks
+                    # the first word comes out at 51 s and the text is condensed; at
+                    # 60 s we still lose 16 s at the head and ~16 s at the tail; at
+                    # 30 s both ends are clean. A 30 s blob stays under the training
+                    # limit and the VRAM peak is ~5× lower than at 300 s.
+OVERLAP_SEC = 10    # context read upstream of each block, then discarded: the start
+                    # of a blob is its least reliable zone (up to 6.5 s of silence
+                    # measured at 30 s), so it is taken from the previous block, which
+                    # transcribes it at its own end. Must stay >= that silence,
+                    # otherwise the join loses the first words of the next block.
+SRT_MAX_CHARS = 42  # width of a readable subtitle (2 lines max)
+SRT_MAX_SEC = 6.0   # max duration of a subtitle
 
-# NeMo est logueux (OneLogger, avertissements de dataloader) : on garde l'essentiel.
+# NeMo is noisy (OneLogger, dataloader warnings): keep only what matters.
 logging.getLogger("nemo").setLevel(logging.ERROR)
 logging.getLogger("one_logger").setLevel(logging.ERROR)
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
@@ -41,7 +41,7 @@ logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
 @dataclass
 class Transcript:
-    """Texte transcrit et sous-titres horodatés (Cue)."""
+    """Transcribed text and timestamped subtitles (Cue)."""
     text: str
     cues: list = field(default_factory=list)
 
@@ -57,7 +57,7 @@ class Cue:
 
 
 def _fmt_ts(seconds):
-    """Secondes -> HH:MM:SS,mmm (format SRT)."""
+    """Seconds -> HH:MM:SS,mmm (SRT format)."""
     seconds = max(0.0, float(seconds))
     ms = int(round(seconds * 1000))
     h, ms = divmod(ms, 3_600_000)
@@ -67,10 +67,10 @@ def _fmt_ts(seconds):
 
 
 def render_srt(cues, max_chars=SRT_MAX_CHARS, max_sec=SRT_MAX_SEC):
-    """Rend une liste de Cue en sous-titres SRT lisibles.
+    """Render a list of Cue as readable SRT subtitles.
 
-    Les horodatages de NeMo (TDT) sont par mot ; on les regroupe en sous-titres
-    de deux lignes au plus, de largeur et de durée bornées.
+    NeMo's (TDT) timestamps are per word; they are grouped into subtitles of at
+    most two lines, with bounded width and duration.
     """
     lines = []
     for i, cue in enumerate(cues, 1):
@@ -82,7 +82,7 @@ def render_srt(cues, max_chars=SRT_MAX_CHARS, max_sec=SRT_MAX_SEC):
 
 
 def _wrap(text, max_chars):
-    """Découpe un texte en lignes de max_chars, sur les frontiers de mots."""
+    """Split a text into lines of max_chars, on word boundaries."""
     words = text.split()
     if not words:
         return [text]
@@ -98,12 +98,11 @@ def _wrap(text, max_chars):
 
 
 def _norm_words(raw):
-    """Normalise les horodatages NeMo en (début, fin, texte) croissants.
+    """Normalise NeMo timestamps into increasing (start, end, text) triplets.
 
-    L'alignement TDT n'est pas parfaitement monotone (un mot peut finir avant
-    le précédent sur un silence) : sans correction, le SRT produit est
-    illisible. Accepte un dictionnaire `timestamp['word']` de NeMo comme une
-    liste de triplets.
+    TDT alignment is not perfectly monotonic (a word can end before the previous
+    one on a silence): without correction the resulting SRT is unreadable. Accepts
+    NeMo's `timestamp['word']` dict as well as a plain list of triplets.
     """
     words = []
     prev_end = 0.0
@@ -130,7 +129,7 @@ def _norm_words(raw):
 
 
 def _norm_segments(raw):
-    """Phrases de NeMo (`timestamp['segment']`) normalisées, ou [] si absentes."""
+    """Normalised NeMo sentences (`timestamp['segment']`), or [] if absent."""
     segs = []
     for item in raw or ():
         try:
@@ -149,18 +148,18 @@ def _norm_segments(raw):
 
 def to_cues(timestamp, offset=0.0, t0=0.0, t1=math.inf,
             max_chars=SRT_MAX_CHARS, max_sec=SRT_MAX_SEC):
-    """Construit des sous-titres lisibles à partir des horodatages NeMo.
+    """Build readable subtitles from NeMo timestamps.
 
-    On préfère les phrases (`timestamp['segment']`, déjà ponctuées par le
-    modèle) ; une phrase trop longue pour deux lignes est redécoupée sur les
-    horodatages de mots. Sans phrases, on regroupe les mots directement.
+    Sentences are preferred (`timestamp['segment']`, already punctuated by the
+    model); a sentence too long for two lines is re-cut on the word timestamps.
+    Without sentences, words are grouped directly.
 
-    Seuls les mots/phrases démarrant dans [t0, t1) — temps **relatifs au bloc
-    lu** — sont conservés : c'est la fenêtre qui exclut le chevauchement avec le
-    bloc précédent (voir `plan_chunks`).
+    Only words/sentences *starting* in [t0, t1) — times **relative to the chunk
+    read** — are kept: that window is what excludes the overlap with the previous
+    chunk (see `plan_chunks`).
 
-    `timestamp` accepte le dict renvoyé par NeMo (hypothesis.timestamp) comme
-    une simple liste de triplets [début, fin, mot].
+    `timestamp` accepts the dict NeMo returns (hypothesis.timestamp) as well as a
+    plain list of [start, end, word] triplets.
     """
     if isinstance(timestamp, dict):
         words = [w for w in _norm_words(timestamp.get("word")) if t0 <= w[0] < t1]
@@ -175,15 +174,15 @@ def to_cues(timestamp, offset=0.0, t0=0.0, t1=math.inf,
             if len(text) <= max_chars * 2 and end - start <= max_sec:
                 cues.append(Cue(start, end, text))
                 continue
-            # phrase trop longue : on la recoupe sur les mots qu'elle contient
+            # sentence too long: re-cut it on the words it contains
             inside = [w for w in words if start <= w[0] < end]
             joined = " ".join(w[2] for w in inside)
             if inside and " ".join(joined.split()) == " ".join(text.split()):
                 cues.extend(_group(inside, max_chars, max_sec))
             else:
-                # les mots ne couvrent pas la phrase (ponctuation, tokens
-                # fusionnés) : on découpe le texte en répartissant le temps au
-                # prorata, plutôt que perdre des mots
+                # the words do not cover the sentence (punctuation, merged
+                # tokens): split the text and share the time pro rata rather
+                # than lose words
                 cues.extend(_split_text(text, start, end, max_chars, max_sec))
     else:
         cues = _group(words, max_chars, max_sec)
@@ -191,8 +190,8 @@ def to_cues(timestamp, offset=0.0, t0=0.0, t1=math.inf,
 
 
 def _split_text(text, start, end, max_chars, max_sec):
-    """Découpe un texte long en sous-titres, temps répartis au prorata du nombre
-    de mots (l'alignement n'étant pas disponible, on reste approximatif)."""
+    """Split a long text into subtitles, times shared pro rata by word count (the
+    alignment is unavailable, so this stays approximate)."""
     words = text.split()
     if not words:
         return [Cue(start, end, text)]
@@ -214,8 +213,8 @@ def _split_text(text, start, end, max_chars, max_sec):
 
 
 def _group(words, max_chars, max_sec):
-    """Regroupe des mots en sous-titres de deux lignes max, en coupant de
-    préférence sur la ponctuation."""
+    """Group words into subtitles of two lines max, preferring to break on
+    punctuation."""
     cues = []
     cur, cur_start, cur_end = [], 0.0, 0.0
     for start, end, text in words:
@@ -237,16 +236,15 @@ def _group(words, max_chars, max_sec):
 
 
 def plan_chunks(frames, samplerate, chunk_sec=CHUNK_SEC, overlap_sec=OVERLAP_SEC):
-    """Découpe [0, frames) en blocs (début, fin, début_gardé, fin_gardée).
+    """Split [0, frames) into chunks (start, stop, kept_start, kept_stop).
 
-    Chaque bloc est lu avec `overlap_sec` secondes de contexte en amont, mais ses
-    horodatages ne sont retenus que sur la fenêtre [début_gardé, fin_gardée) : la
-    partie chevauchée a déjà été transcrite — en fin de bloc, donc de façon fiable
-    — par le bloc précédent. Les fenêtres gardées sont adjacentes
-    (`fin_gardée[n] == début_gardé[n+1]`) : le texte et les sous-titres ne se
-    doublent pas, et rien n'est perdu.
+    Each chunk is read with `overlap_sec` seconds of upstream context, but its
+    timestamps are only kept on the [kept_start, kept_stop) window: the overlapping
+    part was already transcribed — at the end of a chunk, hence reliably — by the
+    previous chunk. Kept windows are adjacent (`kept_stop[n] ==
+    kept_start[n+1]`): text and subtitles neither duplicate nor lose anything.
 
-    Fonction pure (testée sans modèle) : le dernier bloc est tronqué à frames.
+    Pure function (tested without a model): the last chunk is truncated to frames.
     """
     chunk = max(1, int(chunk_sec * samplerate))
     ov = max(0, min(int(overlap_sec * samplerate), chunk - 1))
@@ -265,19 +263,19 @@ def plan_chunks(frames, samplerate, chunk_sec=CHUNK_SEC, overlap_sec=OVERLAP_SEC
 
 
 def _has_timestamps(timestamp) -> bool:
-    """Le modèle a-t-il rendu des horodatages (donc des sous-titres) ?"""
+    """Did the model return timestamps (hence subtitles)?"""
     if isinstance(timestamp, dict):
         return bool(timestamp.get("word")) or bool(timestamp.get("segment"))
     return bool(timestamp)
 
 
 def is_available() -> bool:
-    """NeMo est-il installé ? Dépendance facultative : `run.sh` n'installe que
-    les 4 paquets de base, `nemo_toolkit[asr]` arrive avec `./run.sh --asr`.
+    """Is NeMo installed? Optional dependency: `run.sh` only installs the 4 base
+    packages, `nemo_toolkit[asr]` comes with `./run.sh --asr`.
 
-    `find_spec` ne charge rien (microseconde) alors qu'un `import nemo`
-    coûterait plusieurs secondes : l'interface appelle ceci à chaque rafraîchissement
-    de l'état pour désactiver la case « Transcrire » et indiquer la commande.
+    `find_spec` loads nothing (microsecond) while `import nemo` would cost
+    several seconds: the UI calls this on every status refresh to disable the
+    “Transcribe” checkbox and show the command to run.
     """
     try:
         return importlib.util.find_spec("nemo") is not None
@@ -286,7 +284,7 @@ def is_available() -> bool:
 
 
 def local_nemo_path() -> str | None:
-    """Chemin du .nemo dans le cache local HuggingFace, s'il existe déjà."""
+    """Path of the .nemo file in the local HuggingFace cache, if it is there."""
     hub = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))) / "hub"
     repo_dir = "models--" + MODEL_REPO.replace("/", "--")
     hits = sorted(hub.glob(f"{repo_dir}/snapshots/*/{NEMO_FILENAME}"))
@@ -305,8 +303,8 @@ class ParakeetTranscriber:
     def _load(self):
         from nemo.collections.asr.models import ASRModel
 
-        # Le device est choisi une fois pour toutes : boucler cuda→cpu→cuda
-        # corrompt le modèle (illegal memory access, sortie « ⁇ »).
+        # The device is chosen once and for all: looping cuda→cpu→cuda corrupts
+        # the model (illegal memory access, “⁇” output).
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = device
         t0 = time.time()
@@ -317,9 +315,9 @@ class ParakeetTranscriber:
             model = ASRModel.from_pretrained(MODEL_REPO)
         model.eval()
         if device == "cuda":
-            model.half()  # ~1,2 Go de poids en fp16 au lieu de 2,4 Go en fp32
-        # Libère le résidu fp32 (~2,4 Go) et le cache de chargement : sans ça
-        # le processus reste à ~3,6 Go de VRAM pour 1,2 Go utiles.
+            model.half()  # ~1.2 GB of fp16 weights instead of 2.4 GB in fp32
+        # Frees the fp32 residue (~2.4 GB) and the load cache: without this the
+        # process stays at ~3.6 GB of VRAM for 1.2 GB of useful weights.
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -349,15 +347,14 @@ class ParakeetTranscriber:
 
     # ------------------------------------------------------------------
     def transcribe(self, wav_path, on_progress=None, cancel=None) -> Transcript:
-        """Transcrit un WAV mono (tout taux d'échantillonnage) par blocs de
-        CHUNK_SEC chevauchés de OVERLAP_SEC, en lecture streaming (mémoire
-        O(bloc)).
+        """Transcribe a mono WAV (any sample rate) in CHUNK_SEC blocks overlapping
+        by OVERLAP_SEC, read in streaming (O(chunk) memory).
 
-        Retourne le texte et, si NeMo a rendu les horodatages, les sous-titres.
-        Le texte est bâti sur les mêmes mots que les sous-titres (hors
-        chevauchement) pour qu'ils ne se contredisent pas ; sans horodatages on
-        retombe sur le texte brut du modèle. Sérialisé par verrou : état global
-        du modèle + VRAM partagée avec LavaSR (voir aussi app.cancel.GPU_LOCK).
+        Returns the text and, if NeMo returned timestamps, the subtitles. The text
+        is built from the same words as the subtitles (outside the overlap) so they
+        cannot contradict each other; without timestamps it falls back to the
+        model's raw text. Serialised by a lock: global model state + VRAM shared
+        with LavaSR (see also app.cancel.GPU_LOCK).
         """
         model = self._ensure_model()
         with self._lock:
@@ -388,9 +385,9 @@ class ParakeetTranscriber:
                         return_hypotheses=True, num_workers=0, timestamps=True,
                     )
                     if out and out[0].text.strip():
-                        # les horodatages sont relatifs au bloc *lu*, qui commence
-                        # `OVERLAP_SEC` avant la fenêtre gardée : on translate les
-                        # deux repères, puis on décale sur le début de lecture
+                        # the timestamps are relative to the chunk *read*, which starts
+                        # OVERLAP_SEC before the kept window: shift both marks, then
+                        # offset by the read start
                         ts = getattr(out[0], "timestamp", None)
                         kept = to_cues(ts, start / src_sr,
                                        (keep_start - start) / src_sr,
@@ -410,8 +407,8 @@ class ParakeetTranscriber:
             "device": self._device,
             "error": self._error,
             "load_time": round(self._loaded_at, 1) if self._loaded_at else None,
-            # false = nemo_toolkit[asr] absent : la transcription échouerait,
-            # l'interface le montre au lieu de laisser une erreur ModuleNotFound
+            # false = nemo_toolkit[asr] missing: transcription would fail, so the
+            # UI says so instead of leaving a ModuleNotFound error
             "available": is_available(),
         }
 
