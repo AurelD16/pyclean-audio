@@ -10,6 +10,9 @@
 #   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 REQUIRE_CPU=0 \
 #       packaging/build_runtime.sh
 #
+#   # Embedded window (needs the GTK + WebKit2GTK *development* files here):
+#   WITH_WEBVIEW=1 packaging/build_runtime.sh
+#
 # The tree is *plain files*, not a PyInstaller bundle: torch is ~2.5 GB of
 # shared libraries, and a frozen torch is the fragile part. Only the launcher is
 # a script (the Windows build freezes it, build_runtime.ps1).
@@ -24,13 +27,31 @@ STAGE="$ROOT/dist/.stage"
 
 VERSION="${VERSION:-1.0.0}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
-FFMPEG_URL="${FFMPEG_URL:-https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz}"
+# A *versioned* ffmpeg, pinned by digest: the binary every user ends up with is
+# the one a builder reviewed. johnvansickle's rolling `ffmpeg-release-*` file is
+# a new build every few weeks under the same name; `old-releases/` is immutable.
+FFMPEG_URL="${FFMPEG_URL:-https://johnvansickle.com/ffmpeg/old-releases/ffmpeg-6.0.1-amd64-static.tar.xz}"
+FFMPEG_SHA256="${FFMPEG_SHA256:-28268bf402f1083833ea269331587f60a242848880073be8016501d864bd07a5}"
 FFMPEG_FROM_SYSTEM="${FFMPEG_FROM_SYSTEM:-0}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+# Embedded window: opt-in on Linux. pywebview[gtk] compiles PyGObject, so it
+# needs the GTK/WebKit2GTK development files on this host and the runtime
+# libraries on the user's machine. Default 0: an honest browser-mode build
+# (the page's Quit button stops the app, see POST /api/shutdown) beats a
+# half-bundled webview that silently degrades.
+WITH_WEBVIEW="${WITH_WEBVIEW:-0}"
 # The CPU assertion exists to catch a CUDA wheel slipping in through LavaSR's
 # own dependency resolution. A deliberate CUDA build (above) has no reason to
 # fail it: REQUIRE_CPU=0 stands it down, nothing else.
 REQUIRE_CPU="${REQUIRE_CPU:-1}"
+
+DL_TMP=""
+# A failing build must not leave 2.6 GB of torch in dist/.stage behind.
+cleanup() {
+  [ -n "$DL_TMP" ] && rm -rf "$DL_TMP"
+  rm -rf "$STAGE"
+}
+trap cleanup EXIT
 
 say() { printf '\n=== %s\n' "$*"; }
 die() { printf '\nBUILD FAILED: %s\n' "$*" >&2; exit 1; }
@@ -129,6 +150,24 @@ exec "$here/runtime/python/bin/python3" "$here/launcher.py" "$@"
 LAUNCHER
 chmod 0755 "$STAGE/pyclean-audio"
 
+# --- 4b. the embedded window (opt-in on Linux) -------------------------------
+# A build with pywebview opens its own window and quits when it is closed. One
+# without opens the page in the default browser — a first-class experience, the
+# page carries the Quit button (POST /api/shutdown).
+WEBVIEW=0
+if [ "$WITH_WEBVIEW" = "1" ]; then
+  say "embedded window: pywebview[gtk]"
+  if uv pip install --python "$PY" "pywebview[gtk]" && "$PY" -c 'import gi, webview'; then
+    WEBVIEW=1
+    echo "webview: bundled (the .deb will depend on libwebkit2gtk-4.1-0)"
+  else
+    echo "WARNING: pywebview[gtk] could not be installed or imported (GTK/WebKit2GTK development files missing?)." >&2
+    echo "WARNING: building in browser mode — the page opens in the default browser" >&2
+    echo "WARNING: and carries the Quit button. Install libgtk-3-dev libwebkit2gtk-4.1-dev" >&2
+    echo "WARNING: gir1.2-gtk-3.0 and re-run with WITH_WEBVIEW=1 for the embedded window." >&2
+  fi
+fi
+
 # --- 5. ffmpeg, by bare name --------------------------------------------------
 # app/processor.py:38,85 calls `ffprobe` and `ffmpeg` without a path: the
 # launcher puts runtime/bin in front of PATH.
@@ -139,11 +178,16 @@ if [ "$FFMPEG_FROM_SYSTEM" = "1" ]; then
   command -v ffprobe >/dev/null || die "FFMPEG_FROM_SYSTEM=1 but ffprobe is absent"
   cp -a "$(command -v ffmpeg)" "$(command -v ffprobe)" "$STAGE/runtime/bin/"
 else
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL "$FFMPEG_URL" -o "$tmp/ffmpeg.tar.xz" || die "cannot download $FFMPEG_URL"
-  tar -xJf "$tmp/ffmpeg.tar.xz" -C "$tmp"
-  cp -a "$tmp"/*/ffmpeg "$tmp"/*/ffprobe "$STAGE/runtime/bin/"
+  DL_TMP="$(mktemp -d)"
+  curl -fsSL "$FFMPEG_URL" -o "$DL_TMP/ffmpeg.tar.xz" || die "cannot download $FFMPEG_URL"
+  if command -v sha256sum >/dev/null; then
+    got="$(sha256sum "$DL_TMP/ffmpeg.tar.xz" | cut -d" " -f1)"
+    [ "$got" = "$FFMPEG_SHA256" ] || die "ffmpeg digest mismatch for $FFMPEG_URL: got $got, expected $FFMPEG_SHA256. The binary in every user's install must be the reviewed one: fix the pin, or pass FFMPEG_SHA256=<digest> for another URL."
+  else
+    echo "WARNING: no sha256sum here, the ffmpeg digest cannot be checked" >&2
+  fi
+  tar -xJf "$DL_TMP/ffmpeg.tar.xz" -C "$DL_TMP"
+  cp -a "$DL_TMP"/*/ffmpeg "$DL_TMP"/*/ffprobe "$STAGE/runtime/bin/"
 fi
 chmod 0755 "$STAGE/runtime/bin/ffmpeg" "$STAGE/runtime/bin/ffprobe"
 "$STAGE/runtime/bin/ffmpeg" -version >/dev/null || die "the bundled ffmpeg does not run"
@@ -157,11 +201,16 @@ say "BUILD-INFO.txt"
   echo
   echo "python:  $("$PY" -V 2>&1)"
   echo "ffmpeg:  $("$STAGE/runtime/bin/ffmpeg" -version | head -1)"
+  echo "ffmpeg source: $FFMPEG_URL"
+  echo "ffmpeg sha256: $FFMPEG_SHA256"
   echo "torch index: $TORCH_INDEX_URL (REQUIRE_CPU=$REQUIRE_CPU)"
+  echo "embedded window: $([ "$WEBVIEW" = 1 ] && echo "yes (pywebview)" || echo "no (browser mode)")"
   echo
   echo "packages:"
   uv pip list --python "$PY"
 } >"$ROOT/dist/BUILD-INFO.txt"
+# read back by packaging/linux/make-deb.sh (Depends:, description)
+printf '%s\n' "$WEBVIEW" >"$ROOT/dist/WEBVIEW"
 
 rm -rf "$STAGE/.check-data" "$DIST"
 mkdir -p "$(dirname "$DIST")"
@@ -169,5 +218,11 @@ mv "$STAGE" "$DIST"
 
 size="$(du -sh "$DIST" | cut -f1)"
 say "done — dist/pyclean-audio ($size)"
+if [ "$WEBVIEW" = "1" ]; then
+  echo "window: embedded (pywebview); closing it quits the app"
+else
+  echo "window: browser mode (WITH_WEBVIEW=0) — the page opens in the default browser"
+  echo "        and its Quit button stops the app"
+fi
 echo "next: packaging/linux/make-deb.sh   (.deb, portable .tar.gz)"
 echo "      packaging/linux/make-portable.sh"

@@ -3,7 +3,15 @@
 Builds the **one-click desktop application**: an installer (Windows) or a
 package (Linux) that carries everything — Python, torch, LavaSR, ffmpeg — so
 that a user without Python, without a terminal and without any configuration
-double-clicks one file and gets a working window.
+double-clicks one file and gets the working page.
+
+**How the page opens is a build option, and the two modes are equivalent.** A
+build with `pywebview` opens the application in its own window, and closing that
+window quits it. A build without opens the page in the default browser — where
+the **Quit** button in the top-right corner stops the application (it asks for a
+confirmation while a job is running). Windows bundles the window by default;
+Linux does not (see [WITH_WEBVIEW](#with_webview-the-embedded-window)). Nothing
+in the page depends on which one you ship.
 
 - [What is shipped](#what-is-shipped)
 - [Layout of an install](#layout-of-an-install)
@@ -93,9 +101,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1
     packaging\installer\pyclean-audio.iss   # -> dist\pyclean-audio-1.0.0-setup.exe
 ```
 
-Prerequisites: [`uv`](https://docs.astral.sh/uv/) (Linux) plus `curl`, `tar`,
-`dpkg-deb`; on Windows, `uv` and **Inno Setup 6** for the installer step. No
-Docker, no cross-compiler, nothing to install in the runtime.
+Prerequisites: [`uv`](https://docs.astral.sh/uv/) and **git** (LavaSR is a
+`git+https` dependency) on both platforms; plus `curl`, `tar` and `dpkg-deb` on
+Linux, and **Inno Setup 6** on Windows for the installer step. No Docker, no
+cross-compiler, nothing to install in the runtime.
 
 ## Linux: `.deb` and portable `.tar.gz`
 
@@ -112,8 +121,31 @@ start it with no terminal. `postinst` only refreshes the desktop cache when
 `desktop-file-utils` is installed; it requires nothing privileged and never
 asks anything.
 
+The `.deb` `Depends:` and its description follow the tree it was built from
+(`dist/WEBVIEW`): an embedded window brings `libwebkit2gtk-4.1-0` and
+`gir1.2-gtk-3.0`, browser mode needs neither and never claims to have a window.
+
 No AppImage in v1: libfuse2 is not installed by default on several
 distributions, which would break the "double-click and it works" promise.
+
+### WITH_WEBVIEW: the embedded window
+
+`pywebview` gives the app its own window, and closing that window quits it. It is
+**on by default on Windows** (pure-Python wheel, WebView2 already present) and
+**off by default on Linux**, because `pywebview[gtk]` compiles PyGObject: it
+needs `libgtk-3-dev`, `libwebkit2gtk-4.1-dev` and `gir1.2-gtk-3.0` on the build
+host, and the runtime libraries on every user's machine.
+
+```bash
+WITH_WEBVIEW=1 packaging/build_runtime.sh     # needs the GTK/WebKit2GTK dev stack
+```
+
+If the stack is missing, the build prints a loud warning and continues **in
+browser mode** rather than failing or half-bundling: `dist/WEBVIEW` then records
+`0`, and `make-deb.sh` writes a browser-mode `.deb`. Half-bundling is the one
+outcome worth avoiding — a tree that imports `webview` and then fails on the
+user's machine is worse than an honest default. And after `POST /api/shutdown`,
+browser mode is a first-class experience, not a degraded one.
 
 ## Windows: `setup.exe`
 
@@ -131,7 +163,9 @@ protected your PC" on the first launch: *More info → Run anyway*.
 
 WebView2 (needed by the embedded window) ships with Windows 11 and Windows 10
 21H2+; where it is missing, the launcher opens the page in the default browser
-instead — the app stays usable, so no runtime is downloaded during install.
+instead — the app stays usable and the page's Quit button stops it — so no
+runtime is downloaded during install. Build with `-WithWebView:$false` for a
+browser-mode `setup.exe`.
 
 ## Build options
 
@@ -140,8 +174,24 @@ instead — the app stays usable, so no runtime is downloaded during install.
 | `VERSION` | `1.0.0` | version in the file names and the installer |
 | `TORCH_INDEX_URL` | `https://download.pytorch.org/whl/cpu` | CPU (default) or `…/whl/cu130` for a CUDA build |
 | `REQUIRE_CPU` | `1` | the build fails if a CUDA torch slips in; `REQUIRE_CPU=0` (`-RequireCpu:$false`) for a deliberate CUDA build |
-| `FFMPEG_URL` | johnvansickle static build (Linux), gyan.dev essentials (Windows) | ffmpeg source |
+| `FFMPEG_URL` | versioned static build (see below) | ffmpeg source |
+| `FFMPEG_SHA256` / `-FfmpegSha256` | the digest of that exact file | the build **stops** if the download does not match |
 | `FFMPEG_FROM_SYSTEM` | `0` (Linux) | `1` reuses the host's `ffmpeg`/`ffprobe` instead of downloading |
+| `WITH_WEBVIEW` | `1` (Windows), `0` (Linux) | bundle `pywebview` for the embedded window |
+
+ffmpeg is **pinned by version and digest**, so the binary every user ends up
+with is the one a builder reviewed (the rolling `ffmpeg-release-*` files upstream
+are a new build under the same name):
+
+| Platform | Version | sha256 |
+| --- | --- | --- |
+| Linux | `johnvansickle.com/ffmpeg/old-releases/ffmpeg-6.0.1-amd64-static.tar.xz` | `28268bf402f1083833ea269331587f60a242848880073be8016501d864bd07a5` |
+| Windows | `gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip` | `db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec` |
+
+Point `FFMPEG_URL` somewhere else and the build stops on the digest unless you
+also pass the matching `FFMPEG_SHA256`. Both builds are checked after unpacking:
+`ffmpeg -version` and `ffprobe -version` must run, and the Linux one ships
+`libmp3lame` (what `app/processor.py` encodes with).
 
 A CUDA build changes `TORCH_INDEX_URL` **and** sets `REQUIRE_CPU=0` (the CPU
 assertion exists to catch a CUDA wheel slipping in through LavaSR's own
@@ -161,9 +211,12 @@ finish:
    ships without it)
 4. `runtime/bin/ffmpeg -version` and `ffprobe -version` both run
 5. `THIRD-PARTY-NOTICES.txt` is in the payload (asserted by `make-deb.sh`)
+6. the ffmpeg download matches its pinned sha256
 
-`dist/BUILD-INFO.txt` records the interpreter, the package list and the ffmpeg
-version of what was actually built.
+`dist/BUILD-INFO.txt` records the interpreter, the package list, the ffmpeg
+version *and its source and digest*, and `dist/WEBVIEW` records whether the
+embedded window is bundled (`1`) or not (`0`) — the two files the packaging
+steps and a bug report read.
 
 ## Manual acceptance checklist
 
@@ -174,9 +227,14 @@ release:
 2. enhance a WAV → download the WAV and the MP3;
 3. enhance a video → download the MP4 (video stream untouched);
 4. cancel a job mid-run → `cancelled`, and no `ffmpeg` left in the task manager;
-5. close the window → no `python`/`pyclean-audio` process left;
-6. launch it a second time → its address opens again, no second server;
-7. uninstall → the program files are gone, the results and the model cache are kept.
+5. close the window (embedded-window builds) → no `python`/`pyclean-audio`
+   process left; and **Quit** from the page (every build) → none left;
+6. on Windows, also check the task manager after closing the window mid-job: in
+   v1 `ffmpeg.exe` may outlive it (there is no Job Object, only a process-group
+   kill of the launcher). It exits on its own; a later build should attach a Job
+   Object to the server process;
+7. launch it a second time → its address opens again, no second server;
+8. uninstall → the program files are gone, the results and the model cache are kept.
 
 ## Why not PyInstaller
 

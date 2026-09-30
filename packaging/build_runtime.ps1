@@ -20,16 +20,29 @@
     # CUDA runtime: a different index, and the CPU assertion stands down
     powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1 `
         -TorchIndexUrl "https://download.pytorch.org/whl/cu130" -RequireCpu:$false
+
+.EXAMPLE
+    # Browser mode (no embedded window): the page opens in the default browser,
+    # where its Quit button stops the app
+    powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1 -WithWebView:$false
 #>
 [CmdletBinding()]
 param(
     [string]$Version = "1.0.0",
     [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
-    [string]$FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # A *versioned* ffmpeg, pinned by digest: the binary every user ends up with
+    # is the one a builder reviewed. gyan.dev's rolling `ffmpeg-release-*` file is
+    # a new build under the same name.
+    [string]$FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip",
+    [string]$FfmpegSha256 = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec",
     [string]$PythonVersion = "3.11",
     # The CPU assertion exists to catch a CUDA wheel slipping in through LavaSR's
     # own dependency resolution; a deliberate CUDA build stands it down.
-    [bool]$RequireCpu = $true
+    [bool]$RequireCpu = $true,
+    # Embedded window (pywebview + the WebView2 runtime already present on
+    # Windows 11 / Windows 10 21H2+). Off = browser mode, where the page's Quit
+    # button stops the app. Nothing is downloaded at install time either way.
+    [bool]$WithWebView = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,15 +148,28 @@ if importlib.util.find_spec("nemo") is not None:
     Run "uv" @("venv", $PyiVenv, "--python", $PythonVersion) "venv for pyinstaller"
     $PyiPy = Join-Path $PyiVenv "Scripts\python.exe"
     Run "uv" @("pip", "install", "--python", $PyiPy, "pyinstaller") "pyinstaller install"
-    Run $PyiPy @(
-        "-m", "PyInstaller",
-        "--noconsole", "--onefile", "--clean",
+    $PyiArgs = @("-m", "PyInstaller", "--noconsole", "--onefile", "--clean")
+    if ($WithWebView) {
+        # pywebview (and its pythonnet dependency) has to be inside the bundle:
+        # the launcher's `import webview` is optional, so without this the exe
+        # would silently fall back to the browser. --collect-all picks up the
+        # package's own data files, --hidden-import the EdgeChromium backend the
+        # default platform uses on Windows.
+        Say "bundling pywebview into the launcher"
+        Run "uv" @("pip", "install", "--python", $PyiPy, "pywebview") "pywebview install"
+        $PyiArgs += @("--collect-all", "webview", "--hidden-import", "webview.platforms.edgechromium")
+    }
+    else {
+        Write-Host "  browser mode: the exe opens the page in the default browser"
+    }
+    $PyiArgs += @(
         "--name", "pyclean-audio",
         "--distpath", $Stage,
         "--workpath", (Join-Path $Tmp "pyi-build"),
         "--specpath", (Join-Path $Tmp "pyi-spec"),
         (Join-Path $Root "packaging\launcher\launcher.py")
-    ) "pyinstaller"
+    )
+    Run $PyiPy $PyiArgs "pyinstaller"
     $Exe = Join-Path $Stage "pyclean-audio.exe"
     if (-not (Test-Path $Exe)) { Die "pyclean-audio.exe was not produced" }
 
@@ -156,6 +182,12 @@ if importlib.util.find_spec("nemo") is not None:
     $Zip = Join-Path $Tmp "ffmpeg.zip"
     Write-Host "  downloading $FfmpegUrl"
     Invoke-WebRequest -UseBasicParsing -Uri $FfmpegUrl -OutFile $Zip
+    if ($FfmpegSha256) {
+        $got = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+        if ($got -ne $FfmpegSha256.ToLower()) {
+            Die "ffmpeg digest mismatch for ${FfmpegUrl}: got $got, expected $FfmpegSha256. The binary in every user's install must be the reviewed one: fix the pin, or pass -FfmpegSha256 <digest> for another URL."
+        }
+    }
     Expand-Archive -Path $Zip -DestinationPath (Join-Path $Tmp "ffmpeg") -Force
     Get-ChildItem -Recurse -Path (Join-Path $Tmp "ffmpeg") -Filter "ffmpeg.exe" |
         Select-Object -First 1 | ForEach-Object { Copy-Item -Force $_.FullName $FfmpegDir }
@@ -179,11 +211,16 @@ if importlib.util.find_spec("nemo") is not None:
         "python:  $(& $Py -V 2>&1)"
         "torch:   $TorchVersion"
         "ffmpeg:  $FfmpegVersion"
+        "ffmpeg source: $FfmpegUrl"
+        "ffmpeg sha256: $FfmpegSha256"
         "torch index: $TorchIndexUrl (REQUIRE_CPU=$($RequireCpu.ToString().ToLower()))"
+        "embedded window: $(if ($WithWebView) { 'yes (pywebview)' } else { 'no (browser mode)' })"
         ""
         "packages:"
         $Packages
     ) | Set-Content -Path (Join-Path $DistRoot "BUILD-INFO.txt") -Encoding UTF8
+    # read back by the packaging steps (and by a human wondering what a tree is)
+    Set-Content -Path (Join-Path $DistRoot "WEBVIEW") -Value $(if ($WithWebView) { "1" } else { "0" }) -Encoding ASCII
 
     if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
     Move-Item -Path $Stage -Destination $Dist

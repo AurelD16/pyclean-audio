@@ -29,7 +29,9 @@
   }
   .badge.ready { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
   .badge.loading { color: var(--accent2); border-color: rgba(251, 146, 60, .4); }
-  .badge.error { color: var(--err); border-color: rgba(248, 113, 113, .4); }
+  /* `display` est redéfini ici : `.error` plus bas (la boîte d'erreur) est
+     `display: none`, et le badge s'éteignait avec elle à chaque erreur modèle. */
+  .badge.error { display: inline-block; color: var(--err); border-color: rgba(248, 113, 113, .4); }
 
   /* sélecteur de langue : deux drapeaux, la langue active en couleur */
   .langs { display: flex; gap: 6px; }
@@ -121,6 +123,8 @@
   .btns a.dl { border-color: var(--accent); color: var(--accent2); }
   .note { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
   .hidden { display: none !important; }
+  .quit-row { display: flex; align-items: center; gap: 10px; }
+  .quit-row .note { margin-top: 0; }
 
   .ghost {
     background: transparent; border: 1px solid var(--line); color: var(--muted);
@@ -174,6 +178,12 @@
       <div class="langs" role="group" aria-label="Language">
         <button type="button" class="lang" data-lang="en" title="English" aria-label="English" aria-pressed="true">🇬🇧</button>
         <button type="button" class="lang" data-lang="fr" title="Français" aria-label="Français" aria-pressed="false">🇫🇷</button>
+      </div>
+      <!-- Version installée uniquement (status.desktop) : sans fenêtre intégrée,
+           c'est le seul endroit où l'utilisateur peut arrêter l'application. -->
+      <div class="quit-row hidden" id="quitRow">
+        <button type="button" class="ghost sm" id="quitBtn" data-i18n="ui.quit">Quit pyclean-audio</button>
+        <span class="note" id="quitNote"></span>
       </div>
     </div>
   </header>
@@ -415,6 +425,10 @@
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
       "ui.opt_transcribe_missing_desktop": "— unavailable: transcription is not part of this installed version (audio cleaning only).",
       "ui.transcribe_unavailable_desktop": "Transcription unavailable: this installed version cleans audio only.",
+      "ui.quit": "Quit pyclean-audio",
+      "ui.quit_confirm": "A job is still running. Quit anyway? Its results will be lost.",
+      "ui.quit_done": "pyclean-audio has stopped — you can close this window.",
+      "ui.quit_failed": "Could not stop pyclean-audio.",
       "ui.go": "Enhance audio",
       "ui.go_n": "Enhance audio — {n} file(s)",
       "ui.cancel": "Cancel processing",
@@ -508,6 +522,10 @@
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
       "ui.opt_transcribe_missing_desktop": "— indisponible : la transcription ne fait pas partie de cette version installée (nettoyage audio uniquement).",
       "ui.transcribe_unavailable_desktop": "Transcription indisponible : cette version installée nettoie l'audio uniquement.",
+      "ui.quit": "Quitter pyclean-audio",
+      "ui.quit_confirm": "Un traitement est encore en cours. Quitter quand même ? Ses résultats seront perdus.",
+      "ui.quit_done": "pyclean-audio s'est arrêté — vous pouvez fermer cette fenêtre.",
+      "ui.quit_failed": "Impossible d'arrêter pyclean-audio.",
       "ui.go": "Améliorer l'audio",
       "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
       "ui.cancel": "Annuler le traitement",
@@ -1217,6 +1235,34 @@ go.addEventListener("click", async () => {
 $("cancelBtn").addEventListener("click", cancelJob);
 $("deleteBtn").addEventListener("click", deleteJob);
 
+// ------------------------------------------------------------------ quitter
+// Présent uniquement dans la version installée (status.desktop). Quand la page
+// a été ouverte dans le navigateur, le lanceur ne peut pas suivre l'onglet :
+// ce bouton est le seul moyen, pour l'utilisateur, d'arrêter l'application.
+async function quitApp() {
+  if (jobId !== null && !confirm(t("ui.quit_confirm"))) return;
+  $("quitBtn").disabled = true;
+  try {
+    const r = await fetch("/api/shutdown", { method: "POST" });
+    if (!r.ok) {
+      $("quitBtn").disabled = false;
+      showError("ui.quit_failed");
+      return;
+    }
+  } catch (e) {
+    $("quitBtn").disabled = false;
+    showError(null, null, e.message);
+    return;
+  }
+  // Le serveur s'arrête juste après avoir répondu : la page reste, l'application
+  // est terminée (le lanceur rend la main et libère le verrou).
+  clearInterval(pollTimer);
+  $("quitBtn").classList.add("hidden");
+  T($("quitNote"), "ui.quit_done");
+}
+
+$("quitBtn").addEventListener("click", quitApp);
+
 $("again").addEventListener("click", () => {
   currentFile = null;
   currentFiles = [];
@@ -1281,6 +1327,7 @@ function paintBadge() {
   // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
   asrMissing = st.available === false;
   desktopMode = s.desktop === true;
+  $("quitRow").classList.toggle("hidden", !desktopMode);
   let asr = "";
   if (st.status === "ready") asr = t("ui.asr_ready");
   else if (st.status === "loading") asr = t("ui.asr_loading");

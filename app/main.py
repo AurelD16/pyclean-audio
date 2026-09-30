@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import logging
+import os
 import queue
 import re
 import shutil
@@ -469,6 +471,49 @@ def status():
     s["queue"] = {"waiting": QUEUE.qsize(), "max": QUEUE_MAX}
     s["desktop"] = DESKTOP  # packaged run: the page drops its ./run.sh wording
     return s
+
+
+# How long the 200 of /api/shutdown travels before the process leaves: long
+# enough for the page to receive it, short enough not to look like a hang.
+SHUTDOWN_GRACE = 0.6
+
+
+def _stop_soon() -> None:
+    """Exit this process once the 200 of `POST /api/shutdown` has been written.
+
+    uvicorn's `Server.should_exit` is not reachable from an ASGI app — finding
+    the live instance would mean a `gc.get_objects()` walk, hundreds of
+    milliseconds with a model resident, and it would buy nothing but a prettier
+    shutdown log — and its signal route is not portable either (`os.kill(pid,
+    SIGTERM)` is a hard TerminateProcess on Windows). So the exit is ours:
+    `os._exit` from a daemon thread. Nothing needs a graceful path: the lifespan
+    only cancels the purge task, and every job folder is already on disk under
+    the state directory. The launcher is waiting on the process — it reaps it,
+    releases the instance lock and quits.
+    """
+    threading.Timer(SHUTDOWN_GRACE, os._exit, args=(0,)).start()
+
+
+@app.post("/api/shutdown")
+def shutdown():
+    """Stops the whole application — **desktop build only** (the page's "Quit").
+
+    404 unless `PYCLEAN_DESKTOP` is set, so `./run.sh`, the CLI and the bare API
+    keep the contract they had: only the packaged app can be stopped this way,
+    and it is what makes the browser mode usable (a browser tab cannot be
+    followed, so the page is the only place a user can stop the app).
+
+    POST only. The logged reason is fixed: no request data reaches the log, and
+    the other way the app stops (window closed, Ctrl+C, a `kill`) is already
+    visible as a uvicorn shutdown.
+    """
+    if not DESKTOP:
+        raise HTTPException(404, "shutdown is only available in the desktop app")
+    logging.getLogger("pyclean").warning(
+        "shutdown requested by the page (Quit button), pid %d", os.getpid(),
+    )
+    _stop_soon()
+    return {"stopping": True}
 
 
 def _check_input_sr(input_sr):

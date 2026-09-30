@@ -8,7 +8,12 @@
 # The payload goes to /opt/pyclean-audio (a self-contained tree, like the
 # Windows one), /usr/bin/pyclean-audio is a symlink to it and the .desktop entry
 # starts it with Terminal=false: double-click in the file manager, or the
-# software centre, and the window opens. No terminal, no Python to install.
+# software centre, and the page opens. No terminal, no Python to install.
+#
+# How the page opens depends on how the tree was built (packaging/README.md):
+# dist/WEBVIEW = 1 -> an embedded window (pywebview), and the .deb then depends
+# on the GTK/WebKit2GTK runtime; 0 -> the default browser, where the page's Quit
+# button stops the app. The description below never promises what is not there.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -17,6 +22,10 @@ SRC="$DIST/pyclean-audio"
 VERSION="${VERSION:-1.0.0}"
 PKG="pyclean-audio_${VERSION}_amd64.deb"
 STAGE="$DIST/.deb"
+
+# What the runtime tree was built with (written by build_runtime.sh).
+[ -f "$DIST/WEBVIEW" ] || die "dist/WEBVIEW is missing — run packaging/build_runtime.sh first"
+WEBVIEW="$(tr -d '[:space:]' <"$DIST/WEBVIEW")"
 
 die() { printf '\nBUILD FAILED: %s\n' "$*" >&2; exit 1; }
 
@@ -43,6 +52,20 @@ ln -s ../../opt/pyclean-audio/pyclean-audio "$STAGE/usr/bin/pyclean-audio"
 
 INSTALLED_KB="$(du -sk "$STAGE/opt/pyclean-audio" | cut -f1)"
 
+# Only the embedded window needs the GTK/WebKit2GTK *runtime* on the user's
+# machine; browser mode needs nothing (that is the point of the default).
+if [ "$WEBVIEW" = "1" ]; then
+  DEPENDS="libwebkit2gtk-4.1-0, gir1.2-gtk-3.0, libc6, libstdc++6, libgomp1"
+  WINDOW_LINE="$(printf '%s\n %s' \
+    "The page opens in the application's own window (WebKit2GTK, a dependency" \
+    "above); closing it quits pyclean-audio.")"
+else
+  DEPENDS="libc6, libstdc++6, libgomp1"
+  WINDOW_LINE="$(printf '%s\n %s' \
+    "The local page opens in your default browser, where its Quit button stops" \
+    "the application.")"
+fi
+
 cat >"$STAGE/DEBIAN/control" <<CONTROL
 Package: pyclean-audio
 Version: $VERSION
@@ -52,14 +75,16 @@ Architecture: amd64
 Maintainer: pyclean-audio <https://github.com/AurelD16/pyclean-audio>
 Installed-Size: $INSTALLED_KB
 Homepage: https://github.com/AurelD16/pyclean-audio
+Depends: $DEPENDS
 Description: Local audio restoration for audio and video files
  pyclean-audio extends the bandwidth of degraded recordings up to 48 kHz
  (LavaSR v2) and, on the command line version, transcribes the cleaned audio.
  Everything runs on this machine: no cloud, no account, no API key.
  .
- The desktop window is a webview around the local page; where WebKit2GTK is
- absent it opens in the default browser instead. The transcription model is not
- bundled (~2.4 GB): the checkbox is disabled and the API answers 400.
+ $WINDOW_LINE
+ .
+ The transcription model is not bundled (~2.4 GB): the checkbox is disabled
+ and the API answers 400.
  .
  The LavaSR weights (~115 MB) are downloaded from HuggingFace on first launch
  and cached under \$XDG_DATA_HOME/pyclean-audio. Results are ephemeral: they
@@ -114,5 +139,10 @@ chmod -R u+w "$STAGE"
 rm -rf "$STAGE"
 
 printf '\ndone — dist/%s (%s)\n' "$PKG" "$(du -h "$DIST/$PKG" | cut -f1)"
+if [ "$WEBVIEW" = "1" ]; then
+  echo "window: embedded (dist/WEBVIEW=1) — the .deb depends on WebKit2GTK"
+else
+  echo "window: browser mode (dist/WEBVIEW=0) — the page opens in the default browser"
+fi
 echo "install: sudo dpkg -i dist/$PKG"
 echo "remove:  sudo dpkg -r pyclean-audio      (results and model cache are kept)"

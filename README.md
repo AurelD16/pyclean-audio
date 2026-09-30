@@ -85,14 +85,24 @@ source using the two linked players.
 
 The same application, shipped as a **one-click desktop program**: no Python to
 install, no terminal, no configuration step. Double-click `pyclean-audio.exe`
-(Windows) or the Start-menu / app-menu entry, and the window opens on the same
-page as below.
+(Windows) or the Start-menu / app-menu entry, and the local page opens.
 
 | | Windows | Linux (Debian, Ubuntu) | Linux (other distributions) |
 | --- | --- | --- | --- |
 | Get it | `pyclean-audio-<version>-setup.exe` | `pyclean-audio_<version>_amd64.deb` | `pyclean-audio-<version>-linux-x86_64.tar.gz` |
 | Install | double-click, no administrator rights | `sudo dpkg -i …deb` | extract the archive |
 | Start | Start-menu shortcut | app menu, or `pyclean-audio` | `./pyclean-audio/pyclean-audio` |
+| Page opens | in the app's own window | in your default browser | in your default browser |
+
+The **Windows** build bundles an embedded window (WebView2, present on Windows
+11 and Windows 10 21H2+; where it is missing, the default browser is used). The
+**Linux** packages are built without it by default — `pywebview` needs the
+GTK/WebKit2GTK development files on the builder *and* the runtime libraries on
+every user's machine, and a silent degradation is worse than an honest default —
+so the page opens in the default browser, where it behaves exactly like the
+embedded one: same controls, and a **Quit** button in the top-right corner that
+stops the application. A builder can opt in with `WITH_WEBVIEW=1`
+(see [packaging/README.md](packaging/README.md)).
 
 Downloads are published on the
 [releases page](https://github.com/AurelD16/pyclean-audio/releases); you can
@@ -104,13 +114,17 @@ operating system.
 
 - The download is ~2.6 GB (CPU torch is ~2.5 GB); installing is then immediate.
 - The **first launch downloads the LavaSR weights (~115 MB)** from HuggingFace,
-  once, like `./run.sh` does. The window opens immediately and the badge shows
-  the progress; the next launch is offline-ready.
+  once, like `./run.sh` does. The page opens immediately and the badge shows the
+  progress; the next launch is offline-ready.
+- **Stopping it:** the embedded window *is* the app — closing it quits. In
+  browser mode, where a tab cannot be followed, use the **Quit** button on the
+  page (it asks for a confirmation while a job is running). Either way the
+  server, the model and the port are released.
 - **v1 is CPU-only.** On a CPU the enhancement is much slower than on a GPU
   (~200× real time on an RTX 2000 Ada against roughly 13× real time on 20
   cores): a one-minute recording takes minutes, not seconds. A CUDA build is a
-  one-parameter change in the build scripts, but it requires an NVIDIA GPU on
-  the user's machine.
+  one-parameter change in the build scripts (plus `REQUIRE_CPU=0`), but it
+  requires an NVIDIA GPU on the user's machine.
 - **Transcription is not part of the desktop build** (the Parakeet model is
   ~2.4 GB): the "Transcribe" checkbox is disabled and says so, without asking
   anyone to run a shell script. The command-line version still has
@@ -269,7 +283,10 @@ read once, at server start.
 | `PYCLEAN_FFMPEG_TIMEOUT` | `0` | watchdog for a single ffmpeg step (0 = unlimited) |
 | `PYCLEAN_PRELOAD_ASR` | `0` | load Parakeet at boot (`1`/`true`/`oui`/`yes`/`on`) |
 | `PYCLEAN_DATA_DIR` | `<repo>/data/jobs` | where results are written (the desktop launcher points it at the per-user state directory) |
-| `PYCLEAN_DESKTOP` | `0` | set by the desktop launcher: the page drops its `./run.sh --asr` wording |
+| `PYCLEAN_DESKTOP` | `0` | set by the desktop launcher: the page drops its `./run.sh --asr` wording, and offers the Quit button |
+| `PYCLEAN_PORT` | `8787` | preferred port of the desktop launcher (`--port` wins); the next free one is taken |
+| `PYCLEAN_HOME` | per platform | root of the desktop launcher's state directory (`%LOCALAPPDATA%\pyclean-audio`, `~/.local/share/pyclean-audio`) |
+| `PYCLEAN_NO_WINDOW` | unset | set to anything: the launcher never opens a window, only prints the URL |
 
 ```bash
 PYCLEAN_JOB_TTL=3600 PYCLEAN_MAX_DURATION=7200 ./run.sh
@@ -357,7 +374,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 
 ```bash
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 134 tests, ~6 s, no model weights loaded
+.venv/bin/python -m pytest        # 301 tests, ~8 s, no model weights loaded
 .venv/bin/python -m ruff check .  # lint
 ```
 

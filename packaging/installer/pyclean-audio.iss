@@ -14,9 +14,11 @@
 ; run time — results, logs and the model cache live in %LOCALAPPDATA%\pyclean-audio
 ; (packaging/launcher/launcher.py), so uninstalling keeps the user's work.
 ;
-; WebView2 (needed by the embedded pywebview window) ships with Windows 11 and
-; Windows 10 21H2+; where it is missing the launcher falls back to the default
-; browser, so no runtime is downloaded during the install.
+; The exe bundles pywebview by default (build_runtime.ps1 -WithWebView), so the
+; app opens in its own window and closing that window quits. WebView2 — what
+; that window needs — ships with Windows 11 and Windows 10 21H2+; where it is
+; missing, the launcher opens the page in the default browser instead and the
+; page's Quit button stops the app. Nothing is downloaded at install time.
 
 #define MyAppName "pyclean-audio"
 #ifndef MyAppVersion

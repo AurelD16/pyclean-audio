@@ -203,12 +203,18 @@ def _read_lock(path: Path) -> tuple[int, int | None]:
     return pid, port
 
 
-def acquire_lock(path: Path | str, port: int | None = None) -> InstanceLock | None:
+def acquire_lock(path: Path | str, port: int | None = None, probe=None) -> InstanceLock | None:
     """Single-instance guard, atomic: returns None when another instance owns it.
 
     A lock left by a dead process (power loss, task manager) is reclaimed: the
     pid it holds is probed and the file replaced. Two launches racing on the same
     instant cannot both win, `O_EXCL` is what makes the creation atomic.
+
+    `probe(port)` is an optional liveness check for the port the lock records.
+    A `kill -9`'d launcher leaves its server alive in its own session: the pid is
+    gone but something still answers, and starting a second server would load a
+    second copy of the model on another port. When the probe says so, the lock is
+    **kept** (pid included) and None is returned: the caller only opens the page.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,9 +222,11 @@ def acquire_lock(path: Path | str, port: int | None = None) -> InstanceLock | No
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
-            pid, _port = _read_lock(path)
+            pid, locked_port = _read_lock(path)
             if _pid_alive(pid):
                 return None
+            if probe is not None and locked_port and probe(locked_port):
+                return None  # orphaned server: do not compete with it
             try:  # stale: reclaim it
                 path.unlink()
             except OSError:
@@ -228,6 +236,19 @@ def acquire_lock(path: Path | str, port: int | None = None) -> InstanceLock | No
             f.write(_lock_text(os.getpid(), port))
         return InstanceLock(path, os.getpid(), port)
     return None
+
+
+def serves_status(port: int) -> bool:
+    """Does the instance recorded in the lock still answer `/api/status`?
+
+    1 s is enough on localhost; any failure (connection refused, timeout, a
+    server that is on its way out) answers "no".
+    """
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=1):
+            return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
 
 
 # ----------------------------------------------------------------- the server
@@ -411,6 +432,22 @@ def _say(message: str) -> None:
         pass
 
 
+def _note(state: Path, message: str) -> None:
+    """Append a dated line to `logs/launcher.log`.
+
+    The frozen Windows launcher has no console: whatever it cannot print, the
+    next launch (and any bug report) must find in the state directory.
+    """
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [{os.getpid()}] {message}\n"
+    try:
+        path = logs_dir(state) / "launcher.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
 def _already_running(state: Path) -> int:
     """A second launch: open the window of the running instance, if it answers."""
     pid, port = _read_lock(lock_path(state))
@@ -461,45 +498,81 @@ def main(argv=None) -> int:
     root = install_root()
     try:
         state = make_state_dirs(data_dir())
-        lock = acquire_lock(lock_path(state))
+        lock = acquire_lock(lock_path(state), probe=serves_status)
     except OSError as exc:
         # Never fall back to the install directory: it is read-only at run time.
         _say(f"{APP_NAME}: the state directory is not usable ({exc}).")
         return 1
     if lock is None:
         pid = _already_running(state)
+        _note(state, f"another instance already owns the app (pid {pid}); nothing started")
         _say(f"{APP_NAME} is already running (pid {pid}); nothing else started.")
         return 0
+    # Everything from here to the end releases the lock and the server, whatever
+    # happens — including the two failures below, which must not leave a lock
+    # behind for the next launch to explain.
     proc = None
     try:
-        port = pick_port(args.port)
+        try:
+            port = pick_port(args.port)
+        except OSError as exc:
+            # No free port in 8787..8806: say it, log it, do not die on a
+            # traceback nobody can see in a --noconsole build.
+            _note(state, f"no free port: {exc}")
+            _say(f"{APP_NAME}: no free port ({exc}). Close what is using it, or "
+                 f"start with --port <n>.")
+            return 1
         url = f"http://127.0.0.1:{port}"
         _say(f"{APP_NAME} — {root}\nStarting the server on {url}…")
-        proc = start_server(root, port, state, logs_dir(state) / "server.log", args.verbose)
+        try:
+            proc = start_server(root, port, state, logs_dir(state) / "server.log",
+                                args.verbose)
+        except OSError as exc:
+            _note(state, f"the server could not be started: {exc}")
+            _say(f"{APP_NAME}: the server could not be started ({exc}); see "
+                 f"{logs_dir(state) / 'server.log'}.")
+            return 1
+
         lock.port = port
         _write_lock(lock)
         status = wait_ready(f"{url}/api/status", READY_TIMEOUT, proc)
         if status is None:
             _say(f"The server did not answer on {url}; see {logs_dir(state) / 'server.log'}.")
+            _note(state, f"the server did not answer on {url} (see server.log)")
             return 1
         if status.get("status") != "ready":
             # The weights (~115 MB) arrive in the background: the window opens
             # now and the badge shows the download.
             _say("First run: downloading the AI model (~115 MB), once.")
         _say(f"Ready on {url}")
+
         if args.no_window:
             _say("No window (--no-window); press Ctrl+C to stop.")
             _wait_forever(proc)
-        elif open_ui(url) == "browser":
-            # A browser tab cannot be followed: the launcher keeps serving until
-            # it is stopped (Ctrl+C, a `kill`, the window being closed by the
-            # desktop environment).
-            _say("Opened in your browser; stop the server with Ctrl+C.")
-            _wait_forever(proc)
-        # "webview": open_ui() has returned, which happens when the window is
-        # closed (webview.start() blocks until then) — closing the window *is*
-        # "quit the app": fall through to `finally` -> terminate + release.
-        # "": nothing could be opened at all, same thing.
+        else:
+            how = open_ui(url)
+            if how == "webview":
+                # open_ui() has returned, which happens when the window is closed
+                # (webview.start() blocks until then): closing the window *is*
+                # "quit the app" — fall through to `finally`.
+                _note(state, "webview window closed: quitting")
+            elif how == "browser":
+                # A browser tab cannot be followed, so the launcher keeps serving.
+                # The page carries the Quit button (POST /api/shutdown): Ctrl+C is
+                # useless in a --noconsole build and in a Terminal=false .desktop.
+                _say(f"Opened in your browser on {url} — use the Quit button on the "
+                     f"page to stop pyclean-audio.")
+                _note(state, f"opened in the browser on {url}; Quit is on the page")
+                _wait_forever(proc)
+            else:
+                # Nothing could be opened (no browser, headless): quitting would
+                # leave the user with nothing at all, so keep serving and say where
+                # the page is. "the window was closed" (quit) and "nothing could be
+                # opened" (keep serving) are two different events.
+                _say(f"{APP_NAME}: no window could be opened — open {url} in your "
+                     f"browser, then use the Quit button on the page to stop it.")
+                _note(state, f"no window could be opened; the page is on {url}")
+                _wait_forever(proc)
     except KeyboardInterrupt:
         _say("\nStopping…")
     finally:

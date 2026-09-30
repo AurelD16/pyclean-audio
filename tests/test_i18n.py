@@ -187,3 +187,45 @@ def test_libelle_bureau_ne_masque_pas_une_cle_du_serveur(page_dict):
     """They are page keys: `ui` wins over `server`, they never shadow one."""
     for key in DESKTOP_KEYS:
         assert key not in page_dict["server"]["en"]
+
+
+# --------------------------------------------------------------- bouton Quit
+
+QUIT_KEYS = ("ui.quit", "ui.quit_confirm", "ui.quit_done", "ui.quit_failed")
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_libelles_du_bouton_quit_dans_les_deux_langues(page_dict, lang):
+    """EN and FR: this control is what makes browser mode stoppable."""
+    for key in QUIT_KEYS:
+        assert page_dict["ui"][lang][key].strip(), f"{key}/{lang}"
+
+
+def test_quit_est_un_libelle_par_onglet(page_dict, html):
+    """The button's own label lives in the page (data-i18n, EN + FR); the three
+    dynamic labels live in the dictionary and are each used once."""
+    assert page_dict["ui"]["fr"]["ui.quit"] != page_dict["ui"]["en"]["ui.quit"]
+    assert html.count('"ui.quit"') == 3          # attribute + EN + FR
+    assert 'data-i18n="ui.quit">Quit pyclean-audio</button>' in html
+    for key in QUIT_KEYS[1:]:
+        assert html.count(f'"{key}"') == 3, key  # EN + FR + the script
+
+
+def test_le_bouton_quit_n_existe_qu_en_mode_bureau(html):
+    """Hidden by default, revealed only by `status.desktop`: the command-line
+    version must not offer to stop a server the launcher does not own."""
+    assert 'class="quit-row hidden"' in html
+    assert '$("quitRow").classList.toggle("hidden", !desktopMode)' in html
+
+
+def test_quit_appelle_le_point_de_terminal_du_bureau(html):
+    """POST /api/shutdown, and only that: the endpoint is desktop-only (404
+    otherwise) and a GET never reaches the handler."""
+    assert html.count('fetch("/api/shutdown"') == 1
+    assert 'fetch("/api/shutdown", { method: "POST" })' in html
+
+
+def test_le_badge_ne_disparait_pas_en_cas_erreur(html):
+    """`.error { display: none }` (the error box) also matched `.badge.error`, so
+    the model badge vanished exactly when it had something to say."""
+    assert ".badge.error { display: inline-block;" in html

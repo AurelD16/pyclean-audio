@@ -30,7 +30,7 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # 208 tests, ~6 s, no model loaded
+.venv/bin/python -m pytest            # 301 tests, ~8 s, no model loaded
 .venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
 ```
 
@@ -303,9 +303,24 @@ What must not be broken there:
   `nemo` is **not** importable, and that `ffmpeg`/`ffprobe` run.
 - **`launcher.py` is standard library only and must stay free of import-time
   side effects** — that is what lets `tests/test_launcher.py` cover the single
-  instance, the port, the environment, `wait_ready`, `terminate` and `open_ui`
-  without a server, a network or a window. `pywebview` is optional: the launcher
-  falls back to the default browser.
+  instance, the port, the environment, `wait_ready`, `terminate`, `open_ui` and
+  `main()`'s whole lifecycle without a server, a network or a window.
+  `pywebview` is **optional**: the Windows build bundles it, the Linux build
+  does not (`WITH_WEBVIEW=0`), and where the import or the window fails the
+  launcher falls back to the default browser.
+- **The app must be stoppable in every configuration** (this is the whole point
+  of the `""` branch):
+  - `"webview"` — closing the window quits (open_ui has returned);
+  - `"browser"` — the launcher cannot follow a tab, so it keeps serving and the
+    **page** carries the Quit button;
+  - `""` — nothing could be opened: it must NOT quit silently, it says the URL,
+    logs it and keeps serving.
+- **`POST /api/shutdown` is the counterpart** (`app/main.py`): **404 unless
+  `DESKTOP`**, POST only, answers 200 and *then* exits the process
+  (`_stop_soon`, `os._exit` from a timer — uvicorn's `Server.should_exit` is not
+  reachable from an ASGI app). The page shows the Quit control only when
+  `status.desktop` is true, and confirms while a job is running. Do not "helpfully"
+  expose it outside desktop mode: `./run.sh` must keep its exact contract.
 - **`--workers 1` is mandatory** in `server_command()`, same reason as in
   `run.sh` and in the Dockerfile: one in-process queue, job state in a dict,
   lock-guarded model singletons.
@@ -317,9 +332,12 @@ What must not be broken there:
   instead of the wording that tells the user to run `./run.sh --asr`. The
   server-side `transcribe_unavailable` wording in `app/messages.py` stays as it
   is: it is the CLI/API message.
+- **ffmpeg is pinned by version *and* sha256** (Linux 6.0.1, Windows 8.1.2):
+  a rolling upstream URL would put an unreviewed binary in every user's install.
+  Override `FFMPEG_URL` and you must override `FFMPEG_SHA256` too.
 - v1 ships **CPU only, without transcription** (NeMo is ~2.4 GB), and the
   Windows installer is **unsigned** (SmartScreen: "more info → run anyway").
-  A CUDA build is `TORCH_INDEX_URL=…/whl/cu130`.
+  A CUDA build is `TORCH_INDEX_URL=…/whl/cu130` **plus `REQUIRE_CPU=0`**.
 
 ## Model constraints to respect
 

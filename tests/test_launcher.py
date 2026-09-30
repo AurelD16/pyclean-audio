@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 import types
 import urllib.error
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -444,6 +445,11 @@ def test_open_ui_eteint_par_pyclean_no_window(monkeypatch):
 
 # ------------------------------------------------------------- main() lifecycle
 
+def tmp_log(calls):
+    """The launcher's own log inside the temporary state directory."""
+    return launcher.logs_dir(calls["lock"].parent) / "launcher.log"
+
+
 @pytest.fixture
 def run_main(tmp_path, monkeypatch):
     """Drive `main()` with no server, no port bound and no window.
@@ -452,8 +458,8 @@ def run_main(tmp_path, monkeypatch):
     records what it did (`ui` is what `open_ui` answers, and can be changed
     before the call).
     """
-    calls = {"ui": "webview", "open_ui": [], "wait_forever": 0,
-             "terminate": [], "started": [], "lock": launcher.lock_path(tmp_path / "state")}
+    calls = {"ui": "webview", "open_ui": [], "wait_forever": 0, "terminate": [],
+             "started": [], "already": [], "lock": launcher.lock_path(tmp_path / "state")}
 
     proc = FakeProc()
     monkeypatch.setattr(launcher, "_install_signal_handlers", lambda: None)
@@ -468,6 +474,10 @@ def run_main(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "_wait_forever",
                         lambda _p: calls.__setitem__("wait_forever", calls["wait_forever"] + 1))
     monkeypatch.setattr(launcher, "terminate", lambda p, **_k: calls["terminate"].append(p))
+    # main() calls _already_running() when the lock is taken: keep it in the
+    # recorder instead of letting it touch the network.
+    monkeypatch.setattr(launcher, "_already_running",
+                        lambda _state: calls["already"].append(1) or 0)
 
     def run(*argv):
         calls["rc"] = launcher.main(list(argv))
@@ -499,15 +509,80 @@ def test_le_navigateur_continue_de_servir(run_main):
     assert not calls["lock"].exists()
 
 
-def test_aucune_fenetre_ne_laisse_pas_de_serveur(run_main):
-    """Nothing could be opened (no browser, headless): same as closing the
-    window, the app must not linger."""
+def test_aucune_fenetre_ouvre_rien_mais_sert_toujours(run_main, capsys):
+    """D7.1: nothing could be opened (no browser, headless) is NOT "the window was
+    closed". The app says where the page is and keeps serving, so the user is
+    never left with nothing — the Quit button on the page stops it."""
     run, calls = run_main
     calls["ui"] = ""
     assert run() == 0
-    assert calls["wait_forever"] == 0
+    assert calls["open_ui"] == ["http://127.0.0.1:8787"]
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:8787" in out      # actionable: the URL is named
+    assert "no window could be opened" in out
+    assert "no window could be opened" in (tmp_log(calls)).read_text(encoding="utf-8")
+    assert calls["wait_forever"] == 1
     assert len(calls["terminate"]) == 1
     assert not calls["lock"].exists()
+
+
+def test_le_navigateur_indique_le_bouton_quit(run_main, capsys):
+    """Ctrl+C is useless in a --noconsole build and in a Terminal=false
+    .desktop: the message must point at the page instead."""
+    run, calls = run_main
+    calls["ui"] = "browser"
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "Quit" in out and "http://127.0.0.1:8787" in out
+    assert "Ctrl+C" not in out
+    assert calls["wait_forever"] == 1
+
+
+def test_pas_de_port_libre_est_signale_pas_traceback(run_main, capsys, monkeypatch):
+    """MINOR 2: on a --noconsole build a traceback is invisible; the launcher says
+    what happened and returns 1."""
+    run, calls = run_main
+
+    def _no_port(*_a, **_k):
+        raise OSError("no free port in 8787..8806")
+
+    monkeypatch.setattr(launcher, "pick_port", _no_port)
+    assert run() == 1
+    assert calls["started"] == []
+    assert "no free port" in capsys.readouterr().out
+    assert "no free port" in tmp_log(calls).read_text(encoding="utf-8")
+    assert not calls["lock"].exists()   # the lock is still released
+
+
+def test_un_serveur_qui_ne_demarre_pas_est_signale(run_main, capsys, monkeypatch):
+    run, calls = run_main
+
+    def _no_server(*_a, **_k):
+        raise OSError("runtime/python/bin/python3: not found")
+
+    monkeypatch.setattr(launcher, "start_server", _no_server)
+    assert run() == 1
+    assert "could not be started" in capsys.readouterr().out
+    assert "could not be started" in tmp_log(calls).read_text(encoding="utf-8")
+    assert not calls["lock"].exists()
+
+
+def test_un_serveur_orphelin_n_est_pas_declenche(tmp_path, monkeypatch, run_main):
+    """MINOR 1: a kill -9'd launcher leaves its server alive in its own session.
+    The lock must not be reclaimed (that would load a second copy of the model on
+    another port); the page of the live instance is opened instead."""
+    run, calls = run_main
+    calls["lock"].parent.mkdir(parents=True, exist_ok=True)
+    calls["lock"].write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: False)
+    probed = []
+    monkeypatch.setattr(launcher, "serves_status",
+                        lambda port: probed.append(port) or True)
+    assert run() == 0
+    assert probed == [8787]
+    assert calls["started"] == []               # no second server
+    assert calls["lock"].exists()               # the lock is kept
+    assert calls["lock"].read_text().startswith("424242")
 
 
 def test_no_window_sert_jusqu_a_l_arret_explicite(run_main):
@@ -576,3 +651,68 @@ def test_sigterm_declenche_le_nettoyage(monkeypatch):
     launcher._install_signal_handlers()
     assert [sig for sig, _ in caught] == [signal.SIGTERM, signal.SIGHUP]
     assert all(h.__name__ == "_stop" for _, h in caught)
+
+
+# ------------------------------------------------- verrou et instance orpheline
+
+def test_serves_status_repond_vrai_pour_un_serveur(monkeypatch):
+    monkeypatch.setattr(launcher.urllib.request, "urlopen",
+                        lambda *_a, **_k: FakeResponse({"status": "ready"}))
+    assert launcher.serves_status(8787) is True
+
+
+@pytest.mark.parametrize("boom", [urllib.error.URLError("refused"), OSError("boom"),
+                                  ValueError("bad json")])
+def test_serves_status_repond_faux_sinon(monkeypatch, boom):
+    def _raise(*_a, **_k):
+        raise boom
+
+    monkeypatch.setattr(launcher.urllib.request, "urlopen", _raise)
+    assert launcher.serves_status(8787) is False
+
+
+def test_un_verrou_avec_un_serveur_orphelin_n_est_pas_reclame(tmp_path, monkeypatch):
+    """MINOR 1, at the source: pid dead but the port still answers -> keep the
+    lock, refuse the launch (a second server would load a second copy of the
+    model)."""
+    p = tmp_path / "instance.lock"
+    p.write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: False)
+    assert launcher.acquire_lock(p, 9000, probe=lambda port: True) is None
+    assert p.read_text(encoding="utf-8") == "424242\n8787\n"
+
+
+def test_un_verrou_mort_sans_serveur_est_reclame(tmp_path, monkeypatch):
+    """The usual crash case: nothing answers on the recorded port, reclaim it."""
+    p = tmp_path / "instance.lock"
+    p.write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: False)
+    lock = launcher.acquire_lock(p, 9000, probe=lambda port: False)
+    assert lock is not None
+    assert launcher._read_lock(p) == (os.getpid(), 9000)
+
+
+def test_acquire_lock_sans_sonde_ne_touche_a_rien(tmp_path, monkeypatch):
+    """No probe: the pid decides, and a live one still wins."""
+    p = tmp_path / "instance.lock"
+    p.write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: True)
+    assert launcher.acquire_lock(p, 9000) is None
+    assert p.exists()
+
+
+# ------------------------------------------------------------ journal du lanceur
+
+def test_note_ajoute_une_ligne_datee(tmp_path):
+    launcher._note(tmp_path / "state", "something happened")
+    text = tmp_log({"lock": tmp_path / "state" / "instance.lock"}).read_text(encoding="utf-8")
+    assert "something happened" in text
+    assert str(os.getpid()) in text
+    assert text.startswith(time.strftime("%Y"))
+
+
+def test_note_ne_leve_pas_sur_un_journal_inutilisable(tmp_path):
+    """A state directory that cannot be written must not crash the launcher."""
+    blocker = tmp_path / "logs"
+    blocker.write_text("not a directory", encoding="utf-8")
+    launcher._note(tmp_path, "boom")  # must not raise

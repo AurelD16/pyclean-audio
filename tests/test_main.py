@@ -745,3 +745,69 @@ def test_reponse_d_erreur_parametree():
     r = TestClient(m.app).get("/api/jobs/inexistant/file/enhanced_wav")
     assert r.status_code == 404
     assert r.json()["code"] == "file_not_found"
+
+
+# ----------------------------------------------------------- /api/shutdown
+#
+# Desktop-only: the page's "Quit" button is the only way to stop the app when it
+# was opened in a browser (a tab cannot be followed by the launcher).
+
+def test_shutdown_404_hors_mode_bureau(monkeypatch):
+    """`./run.sh`, the CLI and the bare API keep the contract they had."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", False)
+    monkeypatch.setattr(m, "_stop_soon", lambda: pytest.fail("stopped the server"))
+    r = TestClient(m.app).post("/api/shutdown")
+    assert r.status_code == 404
+
+
+def test_shutdown_arrete_le_serveur_en_mode_bureau(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    stopped = []
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: stopped.append(1))
+    r = TestClient(m.app).post("/api/shutdown")
+    assert r.status_code == 200
+    assert r.json() == {"stopping": True}
+    assert stopped == [1]          # the 200 is answered first, then it stops
+
+
+def test_shutdown_est_post_seulement(monkeypatch):
+    """Never a GET: a link or an <img> must not be able to stop the app.
+    (The catch-all StaticFiles mount answers 404 here rather than 405; what
+    matters is that the handler is never reached.)"""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: pytest.fail("stopped the server"))
+    assert TestClient(m.app).get("/api/shutdown").status_code in (404, 405)
+
+
+def test_stop_soon_programme_la_sortie_du_processus(monkeypatch):
+    """Nothing leaves the test process: the exit is scheduled, not run."""
+    fired = []
+
+    class _Timer:
+        def __init__(self, delay, fn, args=()):
+            fired.append((delay, fn, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(m.threading, "Timer", _Timer)
+    monkeypatch.setattr(m.os, "_exit", lambda code: None)
+    m._stop_soon()
+    assert fired == [(m.SHUTDOWN_GRACE, m.os._exit, (0,))]
+
+
+def test_le_journal_de_serveur_trace_la_raison(caplog):
+    """An unexplained exit must be traceable: the reason is logged."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="pyclean"):
+        m.logging.getLogger("pyclean").warning(
+            "shutdown requested by the page (Quit button), pid %d", 1234,
+        )
+    assert "Quit button" in caplog.text

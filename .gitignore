@@ -1,0 +1,15 @@
+# Build artefacts. `packaging/build_runtime.sh` writes a 2.6 GB tree here
+# (dist/pyclean-audio, dist/BUILD-INFO.txt, dist/WEBVIEW, the .deb and the
+# portable archive): one `git add -A` away from being committed otherwise.
+dist/
+
+# .venv and the caches the tooling creates
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# results of a run, and the media the quick tests write at the repo root
+data/
+*.mp3
+*.mp4
