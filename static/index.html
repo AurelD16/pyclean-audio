@@ -19,6 +19,9 @@
   header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
   h1 .logo { color: var(--accent); }
+  .gh { font-size: 13px; margin-top: 4px; }
+  .gh a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }
+  .gh a:hover { color: var(--accent2); border-color: var(--accent2); }
   .badge {
     font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
     color: var(--muted); background: var(--panel);
@@ -149,7 +152,10 @@
 <body>
 <div class="wrap">
   <header>
-    <h1><span class="logo">pyclean-audio</span></h1>
+    <div>
+      <h1><span class="logo">pyclean-audio</span></h1>
+      <div class="gh"><a href="https://github.com/AurelD16/pyclean-audio" target="_blank" rel="noopener">github.com/AurelD16/pyclean-audio</a></div>
+    </div>
     <div id="modelBadge" class="badge">Modèle…</div>
   </header>
 
