@@ -161,11 +161,13 @@ setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART   # unattended (CI, fleet)
 The installer is **unsigned** in v1. Windows SmartScreen shows "Windows has
 protected your PC" on the first launch: *More info → Run anyway*.
 
-WebView2 (needed by the embedded window) ships with Windows 11 and Windows 10
-21H2+; where it is missing, the launcher opens the page in the default browser
-instead — the app stays usable and the page's Quit button stops it — so no
-runtime is downloaded during install. Build with `-WithWebView:$false` for a
-browser-mode `setup.exe`.
+The window is `pywebview` inside the exe, and it needs WebView2, which ships
+with Windows 11 and Windows 10 21H2+. **When it cannot open — no WebView2 on
+that machine, a `-WithWebView:$false` build, or `pywebview` not bundled after
+all — the page opens in the default browser instead**, and the page's Quit
+button stops the app there too. Nothing is downloaded at install time either
+way. (Nobody has run a frozen exe yet: treat the embedded window as intended,
+not as observed.)
 
 ## Build options
 

@@ -94,14 +94,18 @@ install, no terminal, no configuration step. Double-click `pyclean-audio.exe`
 | Start | Start-menu shortcut | app menu, or `pyclean-audio` | `./pyclean-audio/pyclean-audio` |
 | Page opens | in the app's own window | in your default browser | in your default browser |
 
-The **Windows** build bundles an embedded window (WebView2, present on Windows
-11 and Windows 10 21H2+; where it is missing, the default browser is used). The
-**Linux** packages are built without it by default — `pywebview` needs the
+The **Windows** build is built with an embedded window (`-WithWebView`, the
+default): the page opens in the application's own window, and closing it quits.
+The **Linux** packages are built without one by default — `pywebview` needs the
 GTK/WebKit2GTK development files on the builder *and* the runtime libraries on
 every user's machine, and a silent degradation is worse than an honest default —
-so the page opens in the default browser, where it behaves exactly like the
-embedded one: same controls, and a **Quit** button in the top-right corner that
-stops the application. A builder can opt in with `WITH_WEBVIEW=1`
+so the page opens in the default browser.
+
+Whichever way it goes, the page is the same: same controls, and a **Quit**
+button in the top-right corner that stops the application. The browser is also
+what you get whenever the window cannot open — no WebView2 on that Windows
+machine, a `-WithWebView:$false` build, or `pywebview` not bundled — and the
+app stays fully usable. A builder can opt in on Linux with `WITH_WEBVIEW=1`
 (see [packaging/README.md](packaging/README.md)).
 
 Downloads are published on the

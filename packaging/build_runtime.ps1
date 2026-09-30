@@ -79,14 +79,32 @@ try {
     # downloads) is built to be relocatable, so it is copied as is.
     Say "standalone CPython $PythonVersion"
     Run "uv" @("python", "install", $PythonVersion) "uv python install"
-    $PySrc = (& uv python find $PythonVersion).Trim()
+    # `uv python find` must not answer the project's own .venv (a venv records
+    # its base interpreter by absolute path) nor, on Windows, a reparse point we
+    # would copy as such: both are caught by the checks below.
+    $PySrc = (& uv python find --no-project $PythonVersion 2>$null)
+    if (-not $PySrc) { $PySrc = (& uv python find $PythonVersion) }
+    $PySrc = $PySrc.Trim()
     if (-not (Test-Path $PySrc)) { Die "uv python find returned nothing: $PySrc" }
-    $PyPrefix = Split-Path -Parent $PySrc          # <prefix>\python.exe
+    $PyPrefix = (Resolve-Path (Split-Path -Parent $PySrc)).Path   # <prefix>\python.exe
     if (-not (Test-Path (Join-Path $PyPrefix "Lib"))) { Die "not a standalone prefix: $PyPrefix" }
+    $IsVenv = (& $PySrc -c "import sys; print(sys.prefix != sys.base_prefix)").Trim()
+    if ($IsVenv -eq "True") { Die "uv python find answered a virtual environment ($PySrc): it records its base interpreter by absolute path and must never be copied" }
 
     Copy-Item -Recurse -Force $PyPrefix (Join-Path $Stage "runtime\python")
+    # uv refuses to install into an interpreter it manages ("externally
+    # managed"); this copy is ours.
+    Get-ChildItem -Path (Join-Path $Stage "runtime\python") -Filter "EXTERNALLY-MANAGED" -Recurse -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
     $Py = Join-Path $Stage "runtime\python\python.exe"
     if (-not (Test-Path $Py)) { Die "the copied interpreter is missing: $Py" }
+    # The check that catches a tree pointing anywhere else — BEFORE the installs,
+    # which would otherwise write into the builder's own interpreter.
+    $CopiedPrefix = (& $Py -c "import sys; print(sys.prefix)").Trim().TrimEnd("\")
+    $WantedPrefix = (Resolve-Path (Join-Path $Stage "runtime\python")).Path.TrimEnd("\")
+    if ($CopiedPrefix -ne $WantedPrefix) {
+        Die "the copied interpreter still points at $CopiedPrefix (wanted $WantedPrefix)"
+    }
     Run $Py @("-c", "import sys; print(sys.version); print(sys.prefix)") "the copied interpreter"
 
     # --- 2. torch first, and from an explicit index ---------------------------
@@ -198,12 +216,18 @@ if importlib.util.find_spec("nemo") is not None:
         if (-not (Test-Path $path)) { Die "$exe was not found in the downloaded build" }
         Run $path @("-version") "the bundled $exe"
     }
+    # libmp3lame is what app\processor.py encodes with, and MP3 is the default
+    # output format of /api/enhance_folder: a build without it breaks every job.
+    $Encoders = (& (Join-Path $FfmpegDir "ffmpeg.exe") -hide_banner -encoders 2>&1 | Out-String)
+    if ($Encoders -notmatch "libmp3lame") {
+        Die "the bundled ffmpeg has no libmp3lame encoder: pick a build that has it, or pass another -FfmpegUrl"
+    }
 
     # --- 7. what was built -----------------------------------------------------
     Say "BUILD-INFO.txt"
     $TorchVersion = (& $Py -c "import torch; print(torch.__version__)").Trim()
     $FfmpegVersion = (& (Join-Path $FfmpegDir "ffmpeg.exe") -version)[0]
-    $Packages = (& uv pip list --python $Py) -join "`n"
+    $Packages = (& uv pip list --python $Py 2>$null) -join "`n"
     @(
         "pyclean-audio $Version - desktop runtime (windows-x86_64)"
         "built on $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"

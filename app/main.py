@@ -11,8 +11,9 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -494,8 +495,24 @@ def _stop_soon() -> None:
     threading.Timer(SHUTDOWN_GRACE, os._exit, args=(0,)).start()
 
 
+# Origins that are the app itself. It only ever listens on the loopback, so a
+# request from any of them (or from no browser at all) is local by construction.
+LOCAL_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _request_origin(request: Request) -> str:
+    """""the page", "another site", or "" (no browser on the other end)."""
+    if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+        return "cross-site"
+    origin = request.headers.get("origin", "").strip()
+    if not origin:
+        return ""  # curl, the CLI, a scripted client
+    host = urlsplit(origin).hostname or ""
+    return "local" if host in LOCAL_ORIGIN_HOSTS else "cross-site"
+
+
 @app.post("/api/shutdown")
-def shutdown():
+def shutdown(request: Request):
     """Stops the whole application — **desktop build only** (the page's "Quit").
 
     404 unless `PYCLEAN_DESKTOP` is set, so `./run.sh`, the CLI and the bare API
@@ -503,14 +520,29 @@ def shutdown():
     and it is what makes the browser mode usable (a browser tab cannot be
     followed, so the page is the only place a user can stop the app).
 
-    POST only. The logged reason is fixed: no request data reaches the log, and
-    the other way the app stops (window closed, Ctrl+C, a `kill`) is already
-    visible as a uvicorn shutdown.
+    POST only, and **not from another site**: `127.0.0.1` is a
+    potentially-trustworthy origin, so a hostile page can reach it with a
+    `no-cors` POST and no preflight — a blind spray of 8787..8806 would
+    otherwise be enough to stop the app. `Sec-Fetch-Site: cross-site` or an
+    `Origin` that is not our own loopback origin is refused; **a missing header
+    stays allowed**, so the page, curl and a scripted client keep working. (The
+    rest of the API — `POST /api/enhance`, `DELETE /api/jobs/{id}` — is open in
+    the same way; this is where the habit starts.)
+
+    Nothing from the request reaches the log: the origin is one of three values
+    computed here.
     """
     if not DESKTOP:
         raise HTTPException(404, "shutdown is only available in the desktop app")
+    origin = _request_origin(request)
+    if origin == "cross-site":
+        logging.getLogger("pyclean").warning(
+            "shutdown refused: cross-site request, pid %d", os.getpid(),
+        )
+        raise HTTPException(403, "shutdown refused: cross-site request")
     logging.getLogger("pyclean").warning(
-        "shutdown requested by the page (Quit button), pid %d", os.getpid(),
+        "shutdown requested by %s, pid %d",
+        "the page (Quit button)" if origin == "local" else "a local client", os.getpid(),
     )
     _stop_soon()
     return {"stopping": True}

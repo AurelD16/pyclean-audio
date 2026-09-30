@@ -70,16 +70,43 @@ command -v curl >/dev/null || die "curl is required to fetch ffmpeg"
 # downloads) is built to be relocatable, so it is copied as is.
 say "standalone CPython $PYTHON_VERSION"
 uv python install "$PYTHON_VERSION"
-PY_SRC="$(uv python find "$PYTHON_VERSION")"
+# `uv python find` answers two things we must never copy:
+#   - the project's own .venv, when there is one (./run.sh creates one) — and a
+#     venv records its base interpreter by absolute path, so copying one ships a
+#     tree pointing back at the builder. Asking from a directory that is not a
+#     project is the fix; the checks below are the safety net.
+#   - the version-less alias `cpython-3.11-linux-x86_64-gnu`, which is a
+#     **symlink** to the real directory: `cp -a` keeps symlinks as symlinks, so
+#     without `pwd -P` the staged tree would point back at the builder's $HOME
+#     and every later check would pass through it.
+UV_PY_DIR="$(uv python dir)"
+PY_SRC="$(cd / && uv python find "$PYTHON_VERSION")" \
+  || die "uv has no managed Python $PYTHON_VERSION (uv python install $PYTHON_VERSION)"
 [ -x "$PY_SRC" ] || die "uv python find returned no interpreter: $PY_SRC"
-PY_PREFIX="$(dirname "$(dirname "$PY_SRC")")"
-[ -d "$PY_PREFIX/lib" ] || die "not a standalone prefix (no lib/): $PY_PREFIX"
+PY_PREFIX="$(cd "$(dirname "$PY_SRC")/.." && pwd -P)"
+[ -d "$PY_PREFIX/lib/python3."* ] || die "not a standalone prefix (no lib/python3.x): $PY_PREFIX"
+# A managed standalone build, not a venv and not the system Python: only uv's
+# downloads are built to be relocatable.
+case "$PY_PREFIX" in
+  "$UV_PY_DIR"/*) ;;
+  *) die "$PY_PREFIX is not a uv-managed interpreter (expected it under $UV_PY_DIR): a venv or a system Python is not relocatable" ;;
+esac
+"$PY_SRC" -c 'import sys; sys.exit(0 if sys.prefix == sys.base_prefix else 1)' \
+  || die "uv python find answered a virtual environment ($PY_SRC): a venv records its base interpreter by absolute path and must never be copied"
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/runtime"
 cp -a "$PY_PREFIX" "$STAGE/runtime/python"
+# uv refuses to install into an interpreter it manages ("externally managed");
+# this copy is ours.
+rm -f "$STAGE/runtime/python/lib/python3."*/EXTERNALLY-MANAGED
 PY="$STAGE/runtime/python/bin/python3"
 [ -x "$PY" ] || die "the copied interpreter does not run: $PY"
+# The check that catches a tree pointing anywhere else — BEFORE the installs,
+# which would otherwise happily write into the builder's own interpreter.
+COPIED_PREFIX="$("$PY" -c 'import sys; print(sys.prefix)')"
+[ "$COPIED_PREFIX" = "$STAGE/runtime/python" ] \
+  || die "the copied interpreter still points at $COPIED_PREFIX (wanted $STAGE/runtime/python)"
 "$PY" -c 'import sys; print(sys.version); print(sys.prefix)'
 
 # --- 2. torch first, and from an explicit index -------------------------------
@@ -146,6 +173,13 @@ while [ -L "$self" ]; do
   esac
 done
 here="$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)"
+# Without this the `exec` below fails with "not found" before Python starts, so
+# the launcher never logs anything and the failure is invisible from a double
+# click or from a Terminal=false .desktop.
+if [ ! -x "$here/runtime/python/bin/python3" ]; then
+  echo "pyclean-audio: broken installation (no interpreter at $here/runtime/python)" >&2
+  exit 1
+fi
 exec "$here/runtime/python/bin/python3" "$here/launcher.py" "$@"
 LAUNCHER
 chmod 0755 "$STAGE/pyclean-audio"
@@ -180,18 +214,28 @@ if [ "$FFMPEG_FROM_SYSTEM" = "1" ]; then
 else
   DL_TMP="$(mktemp -d)"
   curl -fsSL "$FFMPEG_URL" -o "$DL_TMP/ffmpeg.tar.xz" || die "cannot download $FFMPEG_URL"
+  # Any of the three, or the build stops: shipping an unverified ffmpeg to
+  # every user is exactly the defect this pin exists to prevent.
   if command -v sha256sum >/dev/null; then
     got="$(sha256sum "$DL_TMP/ffmpeg.tar.xz" | cut -d" " -f1)"
-    [ "$got" = "$FFMPEG_SHA256" ] || die "ffmpeg digest mismatch for $FFMPEG_URL: got $got, expected $FFMPEG_SHA256. The binary in every user's install must be the reviewed one: fix the pin, or pass FFMPEG_SHA256=<digest> for another URL."
+  elif command -v shasum >/dev/null; then
+    got="$(shasum -a 256 "$DL_TMP/ffmpeg.tar.xz" | cut -d" " -f1)"
+  elif command -v openssl >/dev/null; then
+    got="$(openssl dgst -sha256 "$DL_TMP/ffmpeg.tar.xz" | awk '{print $NF}')"
   else
-    echo "WARNING: no sha256sum here, the ffmpeg digest cannot be checked" >&2
+    die "no sha256 tool (sha256sum, shasum, openssl) to verify the ffmpeg digest: install one, or pass FFMPEG_FROM_SYSTEM=1 after checking that ffmpeg yourself"
   fi
+  [ "$got" = "$FFMPEG_SHA256" ] || die "ffmpeg digest mismatch for $FFMPEG_URL: got $got, expected $FFMPEG_SHA256. The binary in every user's install must be the reviewed one: fix the pin, or pass FFMPEG_SHA256=<digest> for another URL."
   tar -xJf "$DL_TMP/ffmpeg.tar.xz" -C "$DL_TMP"
   cp -a "$DL_TMP"/*/ffmpeg "$DL_TMP"/*/ffprobe "$STAGE/runtime/bin/"
 fi
 chmod 0755 "$STAGE/runtime/bin/ffmpeg" "$STAGE/runtime/bin/ffprobe"
 "$STAGE/runtime/bin/ffmpeg" -version >/dev/null || die "the bundled ffmpeg does not run"
 "$STAGE/runtime/bin/ffprobe" -version >/dev/null || die "the bundled ffprobe does not run"
+# libmp3lame is what app/processor.py:159 encodes with, and MP3 is the default
+# output format of /api/enhance_folder: a build without it breaks every job.
+"$STAGE/runtime/bin/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q libmp3lame \
+  || die "the bundled ffmpeg has no libmp3lame encoder: pick a build that has it, or pass another FFMPEG_URL"
 
 # --- 6. what was built --------------------------------------------------------
 say "BUILD-INFO.txt"
@@ -207,7 +251,7 @@ say "BUILD-INFO.txt"
   echo "embedded window: $([ "$WEBVIEW" = 1 ] && echo "yes (pywebview)" || echo "no (browser mode)")"
   echo
   echo "packages:"
-  uv pip list --python "$PY"
+  uv pip list --python "$PY" 2>/dev/null
 } >"$ROOT/dist/BUILD-INFO.txt"
 # read back by packaging/linux/make-deb.sh (Depends:, description)
 printf '%s\n' "$WEBVIEW" >"$ROOT/dist/WEBVIEW"

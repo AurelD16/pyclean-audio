@@ -448,8 +448,13 @@ def _note(state: Path, message: str) -> None:
         pass
 
 
-def _already_running(state: Path) -> int:
-    """A second launch: open the window of the running instance, if it answers."""
+def _already_running(state: Path) -> tuple[int, int | None]:
+    """A second launch: open the page of the running instance, if it answers.
+
+    Returns the pid and port the lock records (0/None when it is unreadable) so
+    the caller can say *what* is already running — the pid may be long gone while
+    its server, in its own session, is not.
+    """
     pid, port = _read_lock(lock_path(state))
     if port:
         url = f"http://127.0.0.1:{port}"
@@ -458,7 +463,7 @@ def _already_running(state: Path) -> int:
                 open_ui(url)
         except (urllib.error.URLError, OSError, ValueError):
             pass
-    return pid
+    return pid, port
 
 
 def _parse_args(argv=None):
@@ -504,9 +509,16 @@ def main(argv=None) -> int:
         _say(f"{APP_NAME}: the state directory is not usable ({exc}).")
         return 1
     if lock is None:
-        pid = _already_running(state)
-        _note(state, f"another instance already owns the app (pid {pid}); nothing started")
-        _say(f"{APP_NAME} is already running (pid {pid}); nothing else started.")
+        pid, port = _already_running(state)
+        if port and not _pid_alive(pid):
+            # An orphaned server: its launcher was killed, the server survived in
+            # its own session. Reporting the dead pid as "running" would be a lie.
+            msg = (f"a server is already running on port {port} "
+                   f"(the launcher's pid {pid} is gone)")
+        else:
+            msg = f"it is already running (pid {pid})"
+        _note(state, f"{msg}; nothing started")
+        _say(f"{APP_NAME}: {msg}; nothing else started.")
         return 0
     # Everything from here to the end releases the lock and the server, whatever
     # happens — including the two failures below, which must not leave a lock

@@ -477,7 +477,7 @@ def run_main(tmp_path, monkeypatch):
     # main() calls _already_running() when the lock is taken: keep it in the
     # recorder instead of letting it touch the network.
     monkeypatch.setattr(launcher, "_already_running",
-                        lambda _state: calls["already"].append(1) or 0)
+                        lambda _state: calls["already"].append(1) or (424242, 8787))
 
     def run(*argv):
         calls["rc"] = launcher.main(list(argv))
@@ -536,6 +536,22 @@ def test_le_navigateur_indique_le_bouton_quit(run_main, capsys):
     assert "Quit" in out and "http://127.0.0.1:8787" in out
     assert "Ctrl+C" not in out
     assert calls["wait_forever"] == 1
+
+
+def test_le_message_d_instance_orpheline_ne_mentionne_pas_un_pid_mort(run_main, capsys,
+                                                                      monkeypatch):
+    """MINOR 5: the pid in the lock is dead and the server is alive. "already
+    running (pid 424242)" would be a lie; the port is the fact."""
+    run, calls = run_main
+    calls["lock"].parent.mkdir(parents=True, exist_ok=True)
+    calls["lock"].write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(launcher, "serves_status", lambda port: True)
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "a server is already running on port 8787" in out
+    assert "the launcher's pid 424242 is gone" in out
+    assert calls["started"] == []
 
 
 def test_pas_de_port_libre_est_signale_pas_traceback(run_main, capsys, monkeypatch):

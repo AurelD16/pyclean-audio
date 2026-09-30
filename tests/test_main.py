@@ -802,12 +802,86 @@ def test_stop_soon_programme_la_sortie_du_processus(monkeypatch):
     assert fired == [(m.SHUTDOWN_GRACE, m.os._exit, (0,))]
 
 
-def test_le_journal_de_serveur_trace_la_raison(caplog):
-    """An unexplained exit must be traceable: the reason is logged."""
+def test_le_journal_de_serveur_trace_la_raison(monkeypatch, caplog):
+    """An unexplained exit must be traceable — and the log line says *who* asked."""
     import logging
 
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: None)
     with caplog.at_level(logging.WARNING, logger="pyclean"):
-        m.logging.getLogger("pyclean").warning(
-            "shutdown requested by the page (Quit button), pid %d", 1234,
+        r = TestClient(m.app).post(
+            "/api/shutdown", headers={"origin": "http://127.0.0.1:8787"},
         )
-    assert "Quit button" in caplog.text
+    assert r.status_code == 200
+    assert "the page (Quit button)" in caplog.text
+
+
+def test_le_journal_distingue_un_client_local(monkeypatch, caplog):
+    """curl (no browser headers) is not "the page": the log says so."""
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: None)
+    with caplog.at_level(logging.WARNING, logger="pyclean"):
+        assert TestClient(m.app).post("/api/shutdown").status_code == 200
+    assert "a local client" in caplog.text
+
+
+# --- the cross-site guard (a hostile page must not stop the app) ------------
+
+def test_shutdown_refuse_une_requete_inter_site(monkeypatch):
+    """`127.0.0.1` is a potentially-trustworthy origin: a `no-cors` POST from
+    another site needs no preflight, and a blind spray of 8787..8806 would
+    otherwise stop the app. `Sec-Fetch-Site` is decisive."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: pytest.fail("stopped the server"))
+    r = TestClient(m.app).post("/api/shutdown", headers={"sec-fetch-site": "cross-site"})
+    assert r.status_code == 403
+
+
+@pytest.mark.parametrize("origin", ["http://evil.example", "http://localhost.evil.test",
+                                   "http://127.0.0.1.evil.test", "null"])
+def test_shutdown_refuse_une_autre_origine(monkeypatch, origin):
+    """An `Origin` that is not our own loopback origin is refused — hostname, not
+    string equality, so `http://127.0.0.1:evil.test` cannot pass as ours."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: pytest.fail("stopped the server"))
+    r = TestClient(m.app).post("/api/shutdown", headers={"origin": origin})
+    assert r.status_code == 403
+
+
+@pytest.mark.parametrize("headers", [
+    {},                                                          # curl, the CLI
+    {"origin": "http://127.0.0.1:8787"},                         # the page
+    {"origin": "http://localhost:9000"},                          # localhost spelling
+    {"sec-fetch-site": "same-origin"},                            # browser, same-origin
+    {"sec-fetch-site": "none"},                                   # address bar
+])
+def test_shutdown_accepte_les_requetes_locales(monkeypatch, headers):
+    """A missing header must stay allowed, or nothing would work."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: None)
+    assert TestClient(m.app).post("/api/shutdown", headers=headers).status_code == 200
+
+
+def test_shutdown_inter_site_ne_logue_pas_une_raison_fausse(monkeypatch, caplog):
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(m, "DESKTOP", True)
+    monkeypatch.setattr(m, "_stop_soon", lambda: pytest.fail("stopped the server"))
+    with caplog.at_level(logging.WARNING, logger="pyclean"):
+        TestClient(m.app).post("/api/shutdown", headers={"origin": "http://evil.example"})
+    assert "refused" in caplog.text
+    assert "Quit button" not in caplog.text
