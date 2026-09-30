@@ -63,7 +63,7 @@ Description: Local audio restoration for audio and video files
  .
  The LavaSR weights (~115 MB) are downloaded from HuggingFace on first launch
  and cached under \$XDG_DATA_HOME/pyclean-audio. Results are ephemeral: they
- live in the same place and are purged after 6 hours.
+ live in the same place, are purged after 6 hours and emptied at the next start.
 CONTROL
 
 # Nothing privileged: the payload is already executable, and the desktop cache

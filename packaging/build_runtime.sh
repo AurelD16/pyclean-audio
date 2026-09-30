@@ -3,9 +3,12 @@
 # on **Linux** (see packaging/README.md).
 #
 #   packaging/build_runtime.sh                     # CPU runtime (~2.6 GB)
-#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 packaging/build_runtime.sh
 #   FFMPEG_FROM_SYSTEM=1 packaging/build_runtime.sh   # reuse the host's ffmpeg
 #   VERSION=1.1.0 packaging/build_runtime.sh
+#
+#   # CUDA runtime: a different index, and the CPU assertion must stand down
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 REQUIRE_CPU=0 \
+#       packaging/build_runtime.sh
 #
 # The tree is *plain files*, not a PyInstaller bundle: torch is ~2.5 GB of
 # shared libraries, and a frozen torch is the fragile part. Only the launcher is
@@ -24,6 +27,10 @@ TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
 FFMPEG_URL="${FFMPEG_URL:-https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz}"
 FFMPEG_FROM_SYSTEM="${FFMPEG_FROM_SYSTEM:-0}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+# The CPU assertion exists to catch a CUDA wheel slipping in through LavaSR's
+# own dependency resolution. A deliberate CUDA build (above) has no reason to
+# fail it: REQUIRE_CPU=0 stands it down, nothing else.
+REQUIRE_CPU="${REQUIRE_CPU:-1}"
 
 say() { printf '\n=== %s\n' "$*"; }
 die() { printf '\nBUILD FAILED: %s\n' "$*" >&2; exit 1; }
@@ -70,8 +77,10 @@ say "import checks"
 # time (app/main.py) — keep that out of the source tree.
 export PYCLEAN_DATA_DIR="$STAGE/.check-data"
 export PYTHONPATH="$ROOT"
-"$PY" - <<'PYCHECK' || die "the runtime does not import cleanly (see above)"
+REQUIRE_CPU="$REQUIRE_CPU" TORCH_INDEX_URL="$TORCH_INDEX_URL" \
+    "$PY" - <<'PYCHECK' || die "the runtime does not import cleanly (see above)"
 import importlib.util
+import os
 import sys
 
 for name in ("torch", "torchaudio", "numpy", "soundfile", "fastapi", "uvicorn",
@@ -81,9 +90,10 @@ for name in ("torch", "torchaudio", "numpy", "soundfile", "fastapi", "uvicorn",
 
 import torch
 
-if torch.version.cuda is not None:
+if os.environ.get("REQUIRE_CPU", "1") == "1" and torch.version.cuda is not None:
     sys.exit(f"CUDA torch {torch.version} slipped in: a CPU runtime is expected "
-             f"(TORCH_INDEX_URL={sys.argv[1] if len(sys.argv) > 1 else 'unset'})")
+             f"(TORCH_INDEX_URL={os.environ.get('TORCH_INDEX_URL', 'unset')}; "
+             f"REQUIRE_CPU=0 for a deliberate CUDA build)")
 if importlib.util.find_spec("nemo") is not None:
     sys.exit("nemo_toolkit is installed: it weighs several GB and is opt-in "
              "(./run.sh --asr); the desktop build must ship without it")
@@ -147,7 +157,7 @@ say "BUILD-INFO.txt"
   echo
   echo "python:  $("$PY" -V 2>&1)"
   echo "ffmpeg:  $("$STAGE/runtime/bin/ffmpeg" -version | head -1)"
-  echo "torch index: $TORCH_INDEX_URL"
+  echo "torch index: $TORCH_INDEX_URL (REQUIRE_CPU=$REQUIRE_CPU)"
   echo
   echo "packages:"
   uv pip list --python "$PY"

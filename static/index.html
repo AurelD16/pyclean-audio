@@ -414,6 +414,7 @@
       "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
       "ui.opt_transcribe_missing_desktop": "— unavailable: transcription is not part of this installed version (audio cleaning only).",
+      "ui.transcribe_unavailable_desktop": "Transcription unavailable: this installed version cleans audio only.",
       "ui.go": "Enhance audio",
       "ui.go_n": "Enhance audio — {n} file(s)",
       "ui.cancel": "Cancel processing",
@@ -506,6 +507,7 @@
       "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
       "ui.opt_transcribe_missing_desktop": "— indisponible : la transcription ne fait pas partie de cette version installée (nettoyage audio uniquement).",
+      "ui.transcribe_unavailable_desktop": "Transcription indisponible : cette version installée nettoie l'audio uniquement.",
       "ui.go": "Améliorer l'audio",
       "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
       "ui.cancel": "Annuler le traitement",
@@ -623,6 +625,9 @@ function stageText(st) {
 
 /* Message d'erreur du serveur : `code`/`params` traduisibles, `raw` en repli. */
 function errorText(code, params, raw) {
+  // Version installée : le texte du serveur renvoie vers ./run.sh, que personne
+  // ne peut lancer depuis cette fenêtre (l'API garde son message d'origine).
+  if (desktopMode && code === "transcribe_unavailable") return t("ui.transcribe_unavailable_desktop");
   if (code) {
     const tpl = lookup(code);
     if (tpl != null) return fill(tpl, params);

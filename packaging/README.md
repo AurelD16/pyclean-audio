@@ -75,7 +75,8 @@ delete the user's work):
 | override | `PYCLEAN_HOME=/somewhere` |
 
 `instance.lock` is the single-instance guard: the second launch opens the
-running window instead of starting a second server. Its pid is probed, so a lock
+address of the running app again (a second webview window, the same browser tab
+otherwise) instead of starting a second server. Its pid is probed, so a lock
 left by a crash is reclaimed.
 
 ## Build chain
@@ -138,12 +139,14 @@ instead — the app stays usable, so no runtime is downloaded during install.
 | -------- | ------- | ------ |
 | `VERSION` | `1.0.0` | version in the file names and the installer |
 | `TORCH_INDEX_URL` | `https://download.pytorch.org/whl/cpu` | CPU (default) or `…/whl/cu130` for a CUDA build |
+| `REQUIRE_CPU` | `1` | the build fails if a CUDA torch slips in; `REQUIRE_CPU=0` (`-RequireCpu:$false`) for a deliberate CUDA build |
 | `FFMPEG_URL` | johnvansickle static build (Linux), gyan.dev essentials (Windows) | ffmpeg source |
 | `FFMPEG_FROM_SYSTEM` | `0` (Linux) | `1` reuses the host's `ffmpeg`/`ffprobe` instead of downloading |
 
-A CUDA build is a **one-parameter** change (`TORCH_INDEX_URL`), but it also
-needs the NVIDIA driver + redistributable on the user's machine; that is why v1
-ships CPU only.
+A CUDA build changes `TORCH_INDEX_URL` **and** sets `REQUIRE_CPU=0` (the CPU
+assertion exists to catch a CUDA wheel slipping in through LavaSR's own
+dependency resolution, so it has to stand down), and it needs the NVIDIA driver
++ redistributable on the user's machine; that is why v1 ships CPU only.
 
 ## Checks the build runs
 
@@ -152,7 +155,8 @@ on the GPU, or that misses ffmpeg, is worse than a build that refuses to
 finish:
 
 1. `import torch, torchaudio, numpy, soundfile, fastapi, uvicorn, LavaSR, app.main`
-2. `torch.version.cuda is None` (a CUDA wheel slipping in is a silent 3 GB regression)
+2. `torch.version.cuda is None`, unless `REQUIRE_CPU=0` (a CUDA wheel slipping
+   in is a silent 3 GB regression)
 3. `nemo` is **not** importable (transcription is opt-in; the desktop build
    ships without it)
 4. `runtime/bin/ffmpeg -version` and `ffprobe -version` both run
@@ -171,7 +175,7 @@ release:
 3. enhance a video → download the MP4 (video stream untouched);
 4. cancel a job mid-run → `cancelled`, and no `ffmpeg` left in the task manager;
 5. close the window → no `python`/`pyclean-audio` process left;
-6. launch it a second time → the running window comes forward, no second server;
+6. launch it a second time → its address opens again, no second server;
 7. uninstall → the program files are gone, the results and the model cache are kept.
 
 ## Why not PyInstaller

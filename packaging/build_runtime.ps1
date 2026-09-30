@@ -17,15 +17,19 @@
     powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1
 
 .EXAMPLE
-    $env:TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu130"
-    powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1
+    # CUDA runtime: a different index, and the CPU assertion stands down
+    powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1 `
+        -TorchIndexUrl "https://download.pytorch.org/whl/cu130" -RequireCpu:$false
 #>
 [CmdletBinding()]
 param(
     [string]$Version = "1.0.0",
     [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cpu",
     [string]$FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-    [string]$PythonVersion = "3.11"
+    [string]$PythonVersion = "3.11",
+    # The CPU assertion exists to catch a CUDA wheel slipping in through LavaSR's
+    # own dependency resolution; a deliberate CUDA build stands it down.
+    [bool]$RequireCpu = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,8 +91,11 @@ try {
     # import time — keep that out of the source tree.
     $env:PYCLEAN_DATA_DIR = Join-Path $Tmp "check-data"
     $env:PYTHONPATH = $Root
+    $env:REQUIRE_CPU = if ($RequireCpu) { "1" } else { "0" }
+    $env:TORCH_INDEX_URL = $TorchIndexUrl
     $Check = @'
 import importlib.util
+import os
 import sys
 
 for name in ("torch", "torchaudio", "numpy", "soundfile", "fastapi", "uvicorn",
@@ -98,8 +105,10 @@ for name in ("torch", "torchaudio", "numpy", "soundfile", "fastapi", "uvicorn",
 
 import torch
 
-if torch.version.cuda is not None:
-    sys.exit(f"CUDA torch {torch.version} slipped in: a CPU runtime is expected")
+if os.environ.get("REQUIRE_CPU", "1") == "1" and torch.version.cuda is not None:
+    sys.exit(f"CUDA torch {torch.version} slipped in: a CPU runtime is expected "
+             f"(TORCH_INDEX_URL={os.environ.get('TORCH_INDEX_URL', 'unset')}; "
+             f"-RequireCpu:$false for a deliberate CUDA build)")
 if importlib.util.find_spec("nemo") is not None:
     sys.exit("nemo_toolkit is installed: it weighs several GB and is opt-in "
              "(./run.sh --asr); the desktop build must ship without it")
@@ -170,7 +179,7 @@ if importlib.util.find_spec("nemo") is not None:
         "python:  $(& $Py -V 2>&1)"
         "torch:   $TorchVersion"
         "ffmpeg:  $FfmpegVersion"
-        "torch index: $TorchIndexUrl"
+        "torch index: $TorchIndexUrl (REQUIRE_CPU=$($RequireCpu.ToString().ToLower()))"
         ""
         "packages:"
         $Packages
@@ -183,5 +192,5 @@ if importlib.util.find_spec("nemo") is not None:
 }
 finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
-    Remove-Item -Env:PYCLEAN_DATA_DIR -ErrorAction SilentlyContinue
+    Remove-Item -Env:PYCLEAN_DATA_DIR, Env:REQUIRE_CPU, Env:TORCH_INDEX_URL -ErrorAction SilentlyContinue
 }

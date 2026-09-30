@@ -442,6 +442,101 @@ def test_open_ui_eteint_par_pyclean_no_window(monkeypatch):
     assert launcher.open_ui("http://127.0.0.1:8787") == ""
 
 
+# ------------------------------------------------------------- main() lifecycle
+
+@pytest.fixture
+def run_main(tmp_path, monkeypatch):
+    """Drive `main()` with no server, no port bound and no window.
+
+    Returns `(run, calls)`: `run(*argv)` calls `launcher.main()` and `calls`
+    records what it did (`ui` is what `open_ui` answers, and can be changed
+    before the call).
+    """
+    calls = {"ui": "webview", "open_ui": [], "wait_forever": 0,
+             "terminate": [], "started": [], "lock": launcher.lock_path(tmp_path / "state")}
+
+    proc = FakeProc()
+    monkeypatch.setattr(launcher, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(launcher, "install_root", lambda *_a, **_k: tmp_path)
+    monkeypatch.setattr(launcher, "data_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(launcher, "pick_port", lambda *_a, **_k: 8787)
+    monkeypatch.setattr(launcher, "start_server",
+                        lambda *_a, **_k: calls["started"].append(1) or proc)
+    monkeypatch.setattr(launcher, "wait_ready", lambda *_a, **_k: {"status": "ready"})
+    monkeypatch.setattr(launcher, "open_ui",
+                        lambda url: calls["open_ui"].append(url) or calls["ui"])
+    monkeypatch.setattr(launcher, "_wait_forever",
+                        lambda _p: calls.__setitem__("wait_forever", calls["wait_forever"] + 1))
+    monkeypatch.setattr(launcher, "terminate", lambda p, **_k: calls["terminate"].append(p))
+
+    def run(*argv):
+        calls["rc"] = launcher.main(list(argv))
+        return calls["rc"]
+
+    return run, calls
+
+
+def test_fermer_la_fenetre_arrete_le_serveur(run_main):
+    """The main gesture on Windows: open_ui() returns when the webview window is
+    closed, and that must quit the app (server stopped, lock released) — not
+    leave a headless server holding the models and the port forever."""
+    run, calls = run_main
+    assert run() == 0
+    assert calls["ui"] == "webview"
+    assert calls["open_ui"] == ["http://127.0.0.1:8787"]
+    assert calls["wait_forever"] == 0
+    assert len(calls["terminate"]) == 1
+    assert not calls["lock"].exists()
+
+
+def test_le_navigateur_continue_de_servir(run_main):
+    """A browser tab cannot be followed: the launcher stays until it is stopped."""
+    run, calls = run_main
+    calls["ui"] = "browser"
+    assert run() == 0
+    assert calls["wait_forever"] == 1
+    assert len(calls["terminate"]) == 1  # ... and terminates on the way out
+    assert not calls["lock"].exists()
+
+
+def test_aucune_fenetre_ne_laisse_pas_de_serveur(run_main):
+    """Nothing could be opened (no browser, headless): same as closing the
+    window, the app must not linger."""
+    run, calls = run_main
+    calls["ui"] = ""
+    assert run() == 0
+    assert calls["wait_forever"] == 0
+    assert len(calls["terminate"]) == 1
+    assert not calls["lock"].exists()
+
+
+def test_no_window_sert_jusqu_a_l_arret_explicite(run_main):
+    run, calls = run_main
+    assert run("--no-window") == 0
+    assert calls["open_ui"] == []
+    assert calls["wait_forever"] == 1
+
+
+def test_un_serveur_muet_arrete_le_lanceur(tmp_path, monkeypatch, run_main):
+    """No answer on /api/status: exit 1, and the half-started server is stopped."""
+    run, calls = run_main
+    monkeypatch.setattr(launcher, "wait_ready", lambda *_a, **_k: None)
+    assert run() == 1
+    assert len(calls["terminate"]) == 1
+    assert not calls["lock"].exists()
+
+
+def test_main_refuse_un_deuxieme_serveur(tmp_path, monkeypatch, run_main):
+    """Single instance: a live lock means no server, no window, exit 0."""
+    run, calls = run_main
+    calls["lock"].parent.mkdir(parents=True, exist_ok=True)
+    # no port on the second line: _already_running() then does no request at all
+    calls["lock"].write_text(f"{os.getpid()}\n", encoding="utf-8")
+    assert run() == 0
+    assert calls["started"] == []
+    assert calls["open_ui"] == []
+
+
 # ------------------------------------------------------------------- misc
 
 def test_install_root_retrouve_le_repertoire_installation(tmp_path):

@@ -489,11 +489,17 @@ def main(argv=None) -> int:
         _say(f"Ready on {url}")
         if args.no_window:
             _say("No window (--no-window); press Ctrl+C to stop.")
-        else:
-            open_ui(url)
-        # A webview returns when its window is closed; a browser tab cannot be
-        # followed, so the launcher stays until the server is stopped.
-        _wait_forever(proc)
+            _wait_forever(proc)
+        elif open_ui(url) == "browser":
+            # A browser tab cannot be followed: the launcher keeps serving until
+            # it is stopped (Ctrl+C, a `kill`, the window being closed by the
+            # desktop environment).
+            _say("Opened in your browser; stop the server with Ctrl+C.")
+            _wait_forever(proc)
+        # "webview": open_ui() has returned, which happens when the window is
+        # closed (webview.start() blocks until then) — closing the window *is*
+        # "quit the app": fall through to `finally` -> terminate + release.
+        # "": nothing could be opened at all, same thing.
     except KeyboardInterrupt:
         _say("\nStopping…")
     finally:

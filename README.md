@@ -116,11 +116,12 @@ operating system.
   anyone to run a shell script. The command-line version still has
   `./run.sh --asr`.
 - Results are **ephemeral**: like the web version, uploads and results are
-  purged after 6 h (`PYCLEAN_JOB_TTL`), and everything is cleared when the app
-  closes. Download what you want to keep.
-- **Single instance**: launching it again brings the running window forward
-  instead of starting a second server. If port 8787 is busy, the next free port
-  is used (the page is opened at the right URL either way).
+  purged after 6 h (`PYCLEAN_JOB_TTL`), and the job folder is emptied at the
+  **next start**. Download what you want to keep.
+- **Single instance**: launching it again opens the address of the running app
+  again (a second window with pywebview, the same browser tab otherwise) instead
+  of starting a second server. If port 8787 is busy, the next free port is used
+  (the page is opened at the right URL either way).
 - The server listens on `127.0.0.1` only — the API has no authentication, so
   it must not be reachable from the network.
 - Uninstalling removes the program files and **keeps** your results and the

@@ -133,12 +133,19 @@ def test_le_texte_par_defaut_de_la_page_est_anglais(html, page_dict):
 
 # ------------------------------------------------------------- desktop build
 
-DESKTOP_KEYS = ("ui.asr_missing_desktop", "ui.opt_transcribe_missing_desktop")
+DESKTOP_KEYS = (
+    "ui.asr_missing_desktop",
+    "ui.opt_transcribe_missing_desktop",
+    "ui.transcribe_unavailable_desktop",
+)
+# The wording of the command-line version (`./run.sh --asr`): untouched, the
+# page still runs that way.
+CLI_KEYS = ("ui.asr_missing", "ui.opt_transcribe_missing")
 
 
 @pytest.mark.parametrize("lang", LANGS)
 def test_libelles_du_bureau_dans_les_deux_langues(page_dict, lang):
-    """The packaged run shows these two instead of the "./run.sh --asr" ones."""
+    """The packaged run shows these instead of the "./run.sh --asr" ones."""
     for key in DESKTOP_KEYS:
         assert page_dict["ui"][lang][key].strip(), key
 
@@ -151,6 +158,15 @@ def test_aucun_libelle_du_bureau_ne_renvoie_au_terminal(page_dict, lang):
         assert "run.sh" not in page_dict["ui"][lang][key], key
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_les_libelles_de_la_ligne_de_commande_sont_intacts(page_dict, lang):
+    """`desktop: false` (./run.sh, uvicorn): the page must keep saying how to
+    enable transcription, otherwise the CLI user loses the instruction."""
+    for key in CLI_KEYS:
+        assert "run.sh" in page_dict["ui"][lang][key], key
+    assert page_dict["server"][lang]["transcribe_unavailable"].count("run.sh") == 1
+
+
 def test_la_page_bascule_sur_les_libelles_du_bureau(html):
     """`status.desktop` drives the choice: without the switch the new keys would
     be dead weight in the dictionary."""
@@ -158,6 +174,13 @@ def test_la_page_bascule_sur_les_libelles_du_bureau(html):
     for key in DESKTOP_KEYS:
         # once in the EN dictionary, once in the FR one, once in the script
         assert html.count(f'"{key}"') == 3, key
+
+
+def test_le_message_400_est_eclaire_par_la_page_en_mode_bureau(html):
+    """The checkbox is enabled until the first /api/status, so transcribe=true
+    can still be sent: the 400 must not echo the server's "./run.sh" text."""
+    assert 'code === "transcribe_unavailable"' in html
+    assert "desktopMode &&" in html
 
 
 def test_libelle_bureau_ne_masque_pas_une_cle_du_serveur(page_dict):
