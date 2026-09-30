@@ -229,3 +229,12 @@ def test_le_badge_ne_disparait_pas_en_cas_erreur(html):
     """`.error { display: none }` (the error box) also matched `.badge.error`, so
     the model badge vanished exactly when it had something to say."""
     assert ".badge.error { display: inline-block;" in html
+
+
+def test_la_confirmation_du_quit_cible_sur_un_job_en_cours(html):
+    """`jobId` reste armé après un job terminé ("Process another file" le remet à
+    zéro) : la confirmation ne doit partir que sur `pollTimer`, le signal que la
+    page arme à l'envoi et `stopPolling()` enlève à la fin."""
+    quit_app = html.split("async function quitApp()")[1].split("async ")[0]
+    line = next(x for x in quit_app.splitlines() if "confirm(" in x)
+    assert line.strip() == 'if (pollTimer !== null && !confirm(t("ui.quit_confirm"))) return;'

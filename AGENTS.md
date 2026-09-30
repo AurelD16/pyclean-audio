@@ -474,9 +474,9 @@ awk '{if($NF+0>m)m=$NF+0} END{print "peak VRAM: " m " MiB"}' /tmp/vram.log
 
 These test commands write `test_8k.wav` and `test.mp4` (~426 MB) at the repo
 root: `.gitignore` covers `*.mp4` but **not** `*.wav` (it lists `*.mp3`,
-`*.mp4`, `data`, `.venv`, `__pycache__`, `.pytest_cache/`, `.ruff_cache/`), and
-the other outputs (`out*/`, `tdir/`) have to be deleted by hand. Note that
-`.gitignore` itself is not committed yet.
+`*.mp4`, `data`, `.venv`, `__pycache__`, `.pytest_cache/`, `.ruff_cache/` and
+`dist/` — the 2.6 GB desktop build), and the other outputs (`out*/`, `tdir/`)
+have to be deleted by hand.
 
 Validity criteria:
 - output duration == input duration (to within < 1 frame at 48 kHz);

@@ -1240,7 +1240,10 @@ $("deleteBtn").addEventListener("click", deleteJob);
 // a été ouverte dans le navigateur, le lanceur ne peut pas suivre l'onglet :
 // ce bouton est le seul moyen, pour l'utilisateur, d'arrêter l'application.
 async function quitApp() {
-  if (jobId !== null && !confirm(t("ui.quit_confirm"))) return;
+  // `pollTimer` est le signal que la page suit déjà : il est armé à l'envoi et
+  // `stopPolling()` l'enlève dès que le job est terminé, annulé ou en erreur.
+  // `jobId`, lui, reste armé après un job fini — il ne dirait pas "en cours".
+  if (pollTimer !== null && !confirm(t("ui.quit_confirm"))) return;
   $("quitBtn").disabled = true;
   try {
     const r = await fetch("/api/shutdown", { method: "POST" });
