@@ -29,6 +29,7 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 ## Contents
 
 - [Quick start](#quick-start)
+- [Desktop app (Windows & Linux)](#desktop-app-windows--linux)
 - [Transcription (optional)](#transcription-optional)
 - [Output files and download names](#output-files-and-download-names)
 - [Command line](#command-line)
@@ -79,6 +80,55 @@ source using the two linked players.
 > `./run.sh --asr` adds it to the existing `.venv` without recreating it.
 > Until then, the “Transcribe the cleaned audio” checkbox is disabled and says why —
 > see [Transcription](#transcription-optional).
+
+## Desktop app (Windows & Linux)
+
+The same application, shipped as a **one-click desktop program**: no Python to
+install, no terminal, no configuration step. Double-click `pyclean-audio.exe`
+(Windows) or the Start-menu / app-menu entry, and the window opens on the same
+page as below.
+
+| | Windows | Linux (Debian, Ubuntu) | Linux (other distributions) |
+| --- | --- | --- | --- |
+| Get it | `pyclean-audio-<version>-setup.exe` | `pyclean-audio_<version>_amd64.deb` | `pyclean-audio-<version>-linux-x86_64.tar.gz` |
+| Install | double-click, no administrator rights | `sudo dpkg -i …deb` | extract the archive |
+| Start | Start-menu shortcut | app menu, or `pyclean-audio` | `./pyclean-audio/pyclean-audio` |
+
+Downloads are published on the
+[releases page](https://github.com/AurelD16/pyclean-audio/releases); you can
+also build them yourself with `packaging/` (see
+[packaging/README.md](packaging/README.md)) — each artifact is built on its own
+operating system.
+
+**What to expect:**
+
+- The download is ~2.6 GB (CPU torch is ~2.5 GB); installing is then immediate.
+- The **first launch downloads the LavaSR weights (~115 MB)** from HuggingFace,
+  once, like `./run.sh` does. The window opens immediately and the badge shows
+  the progress; the next launch is offline-ready.
+- **v1 is CPU-only.** On a CPU the enhancement is much slower than on a GPU
+  (~200× real time on an RTX 2000 Ada against roughly 13× real time on 20
+  cores): a one-minute recording takes minutes, not seconds. A CUDA build is a
+  one-parameter change in the build scripts, but it requires an NVIDIA GPU on
+  the user's machine.
+- **Transcription is not part of the desktop build** (the Parakeet model is
+  ~2.4 GB): the "Transcribe" checkbox is disabled and says so, without asking
+  anyone to run a shell script. The command-line version still has
+  `./run.sh --asr`.
+- Results are **ephemeral**: like the web version, uploads and results are
+  purged after 6 h (`PYCLEAN_JOB_TTL`), and everything is cleared when the app
+  closes. Download what you want to keep.
+- **Single instance**: launching it again brings the running window forward
+  instead of starting a second server. If port 8787 is busy, the next free port
+  is used (the page is opened at the right URL either way).
+- The server listens on `127.0.0.1` only — the API has no authentication, so
+  it must not be reachable from the network.
+- Uninstalling removes the program files and **keeps** your results and the
+  model cache: they live outside the installation
+  (`%LOCALAPPDATA%\pyclean-audio`, `~/.local/share/pyclean-audio`, or
+  `PYCLEAN_HOME`).
+- On Windows the installer is **unsigned** in v1: SmartScreen shows "Windows has
+  protected your PC" once, then *More info → Run anyway*.
 
 ## Transcription (optional)
 
@@ -217,6 +267,8 @@ read once, at server start.
 | `PYCLEAN_MAX_FOLDER_TOTAL` | `8589934592` | max total volume per folder (8 GB) |
 | `PYCLEAN_FFMPEG_TIMEOUT` | `0` | watchdog for a single ffmpeg step (0 = unlimited) |
 | `PYCLEAN_PRELOAD_ASR` | `0` | load Parakeet at boot (`1`/`true`/`oui`/`yes`/`on`) |
+| `PYCLEAN_DATA_DIR` | `<repo>/data/jobs` | where results are written (the desktop launcher points it at the per-user state directory) |
+| `PYCLEAN_DESKTOP` | `0` | set by the desktop launcher: the page drops its `./run.sh --asr` wording |
 
 ```bash
 PYCLEAN_JOB_TTL=3600 PYCLEAN_MAX_DURATION=7200 ./run.sh
@@ -286,7 +338,9 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 - LavaSR is optimized for speech; results on pure music vary (the v2 model is
   mainly trained on VCTK).
 - Transcription requires `./run.sh --asr`; without it the option is refused up
-  front (400) rather than failing mid-job.
+  front (400) rather than failing mid-job. It is not part of the desktop build
+  at all (see [Desktop app](#desktop-app-windows--linux)): the checkbox is
+  disabled there.
 - One job at a time, and one model resident on the GPU at a time.
 - The web page is **English by default**, French as a second language (the two
   flags under the LavaSR badge). Everything else — server messages, command
@@ -315,8 +369,10 @@ to global resampling.) Tests touching `probe`/`process_file` are skipped when
 
 Coverage: block planning and crossfade, windowed resampling equivalence,
 transcription chunking and subtitle generation, the ffmpeg wrapper and its
-error paths, processing limits, ZIP building, retention, cancellation, and the
-queue.
+error paths (including the Windows `kill()` path), processing limits, ZIP
+building, retention, cancellation, the queue, and the desktop launcher
+(`tests/test_launcher.py`: single instance, free port, environment, startup,
+shutdown, window).
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
@@ -357,5 +413,8 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | `app/messages.py` | message keys (`STAGES`, `ERRORS`), English wording, `MediaError` |
 | `app/config.py` | limits and retention, read from the environment |
 | `app/cli.py` | command line interface (English output, no translation) |
+| `requirements-base.txt` | the 4 base dependencies (what `run.sh` installs; `requirements.txt` adds the ASR models) |
+| `packaging/` | desktop application: launcher, runtime build scripts, Inno Setup installer, `.deb` / portable archive |
 | `static/index.html` | the whole web UI (drag & drop, A/B, downloads) + its EN/FR dictionary |
+| `packaging/launcher/launcher.py` | desktop launcher: picks a port, guards the single instance, starts the server, opens the window |
 | `tests/` | pytest suite |

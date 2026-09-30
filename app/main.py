@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .cancel import JobCancelled, raise_if_cancelled
 from .config import (
+    BASE,
+    DESKTOP,
     JOB_MAX,
     JOB_TTL,
     MAX_FOLDER_FILES,
@@ -24,14 +26,16 @@ from .config import (
     PRELOAD_ASR,
     PURGE_INTERVAL,
     QUEUE_MAX,
+    data_dir,
 )
 from .enhancer import get_enhancer
 from .messages import MediaError, error_text, jsonable, stage_text
 from .processor import ALLOWED_EXT, process_file
 from .transcriber import get_transcriber, is_available
 
-BASE = Path(__file__).resolve().parent.parent
-DATA = BASE / "data" / "jobs"
+# The results directory: BASE/data/jobs, or PYCLEAN_DATA_DIR (the desktop
+# launcher points it at the per-user state dir — see app/config.py:data_dir).
+DATA = data_dir()
 DATA.mkdir(parents=True, exist_ok=True)
 
 JOBS = {}
@@ -463,6 +467,7 @@ def status():
         "jobs": len(JOBS),
     }
     s["queue"] = {"waiting": QUEUE.qsize(), "max": QUEUE_MAX}
+    s["desktop"] = DESKTOP  # packaged run: the page drops its ./run.sh wording
     return s
 
 

@@ -1,0 +1,15 @@
+# Base dependency set of pyclean-audio: the 4 packages installed by run.sh:45-47
+# (mirrored in the Dockerfile of the docker branch). Kept unpinned on purpose,
+# like run.sh: "rebuild next year" is allowed to bring a new torch.
+#
+# NOT here:
+# - torch / torchaudio, installed *first* and from an explicit index by the
+#   packaging scripts, because LavaSR depends on torch itself: letting it
+#   resolve would silently pull the default (CUDA) wheel.
+# - nemo_toolkit[asr] (requirements.txt), which weighs several GB and is opt-in
+#   (./run.sh --asr). Its absence is a supported state: the checkbox is
+#   disabled and the API answers 400 to transcribe=true.
+LavaSR @ git+https://github.com/ysharma3501/LavaSR.git
+fastapi
+uvicorn[standard]
+python-multipart

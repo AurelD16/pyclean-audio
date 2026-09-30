@@ -1,0 +1,483 @@
+"""Desktop launcher: single instance, port, environment, startup, shutdown.
+
+No server is started, no port is really bound for long and no window opens: the
+launcher is loaded from its file (`packaging/launcher/launcher.py`, not an
+installed package) and every helper is driven directly — it is standard library
+only and has no import-time side effect, precisely so this file stays cheap.
+"""
+
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import signal
+import subprocess
+import sys
+import types
+import urllib.error
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+import pytest
+
+LAUNCHER_PATH = Path(__file__).resolve().parent.parent / "packaging" / "launcher" / "launcher.py"
+
+
+def _load_launcher():
+    spec = importlib.util.spec_from_file_location("pyclean_launcher", LAUNCHER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+launcher = _load_launcher()
+
+
+@pytest.fixture
+def windows(monkeypatch):
+    """Simulate a Windows run inside the test.
+
+    The launcher branches on `os.name`, but `pathlib.Path` reads it too and
+    refuses to build a `WindowsPath` on this machine — so `Path` is pinned to
+    its POSIX flavour while the branch under test takes the Windows side.
+    """
+    @contextlib.contextmanager
+    def _cm():
+        with monkeypatch.context() as m:
+            m.setattr(os, "name", "nt")
+            m.setattr(launcher, "Path", PurePosixPath)
+            yield
+
+    return _cm()
+
+
+class FakeProc:
+    """A subprocess.Popen stand-in that records the calls of terminate()."""
+
+    pid = 4242
+
+    def __init__(self, running=True, hangs=False):
+        self.calls = []
+        self._running = running
+        self._hangs = hangs
+
+    def poll(self):
+        return None if self._running else 0
+
+    def terminate(self):
+        self.calls.append("terminate")
+        if not self._hangs:
+            self._running = False
+
+    def kill(self):
+        self.calls.append("kill")
+        self._running = False
+
+    def wait(self, timeout=None):
+        self.calls.append(f"wait({timeout})")
+        if self._hangs:
+            raise subprocess.TimeoutExpired("python", timeout or 0)
+        self._running = False
+        return 0
+
+
+class FakeResponse:
+    """What urllib.request.urlopen returns: a context manager with .read()."""
+
+    def __init__(self, payload=None, status=200):
+        self._body = json.dumps(payload if payload is not None else {}).encode()
+        self.status = status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def opener_returning(*results):
+    """A urlopen replacement: each call pops one result, the last one repeats."""
+    queue = list(results)
+
+    def _open(_url, timeout=None):
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return _open
+
+
+# --------------------------------------------------------------- state dirs
+
+def test_data_dir_par_defaut_sur_linux(monkeypatch, tmp_path):
+    monkeypatch.delenv("PYCLEAN_HOME", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    with monkeypatch.context() as m:
+        m.setattr(os, "name", "posix")
+        d = launcher.data_dir()
+    assert d.parts[-2:] == ("xdg", "pyclean-audio")
+
+
+def test_data_dir_sans_xdg_va_dans_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("PYCLEAN_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    with monkeypatch.context() as m:
+        m.setattr(os, "name", "posix")
+        d = launcher.data_dir()
+    assert d.parts[-3:] == (".local", "share", "pyclean-audio")
+
+
+def test_data_dir_sur_windows(monkeypatch, tmp_path, windows):
+    """Windows keeps its state in %LOCALAPPDATA%, never in Program Files."""
+    monkeypatch.delenv("PYCLEAN_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    with windows:
+        d = launcher.data_dir()
+    assert d.parts[-2:] == ("Local", "pyclean-audio")
+
+
+@pytest.mark.parametrize("name", ["posix", "nt"])
+def test_pyclean_home_prime(monkeypatch, tmp_path, name, windows):
+    monkeypatch.setenv("PYCLEAN_HOME", str(tmp_path / "ailleurs"))
+    if name == "nt":
+        with windows:
+            assert launcher.data_dir() == tmp_path / "ailleurs"
+    else:
+        assert launcher.data_dir() == tmp_path / "ailleurs"
+
+
+def test_les_repertoires_etat_ne_sont_pas_dans_le_repertoire_installation(tmp_path):
+    """Criterion: results, logs and cache live under the state dir, not the root."""
+    state = launcher.make_state_dirs(tmp_path / "state")
+    root = tmp_path / "install"
+    (root / "app").mkdir(parents=True)
+    for path in (launcher.jobs_dir(state), launcher.logs_dir(state),
+                 launcher.cache_dir(state)):
+        assert path.is_dir()
+        assert state in path.parents
+        assert root not in path.parents
+    assert launcher.cache_dir(state).parts[-2:] == ("cache", "huggingface")
+    assert list(root.iterdir()) == [root / "app"]  # nothing was written in the root
+
+
+# -------------------------------------------------------------------- port
+
+def test_main_signale_un_etat_inutilisable(monkeypatch, tmp_path, capsys):
+    """main() must exit 1 with a message, not with a traceback (the frozen
+    Windows launcher has no console to print one to)."""
+    blocker = tmp_path / "etat"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("PYCLEAN_HOME", str(blocker))
+    assert launcher.main([]) == 1
+    assert "state" in capsys.readouterr().out.lower()
+
+
+def test_pick_port_renvoie_le_port_prefere():
+    assert launcher.pick_port(8787) == 8787
+
+
+def test_pick_port_contourne_un_port_occupe(tmp_path):
+    """A port held by another socket is never handed to the server."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        taken = busy.getsockname()[1]
+        assert launcher.pick_port(taken) != taken
+
+
+def test_pick_port_echoue_sans_port_libre(monkeypatch):
+    """Everything taken: the launcher must fail loudly, never bind 0.0.0.0."""
+    monkeypatch.setattr(launcher.socket, "socket", _AlwaysBusySocket)
+    with pytest.raises(OSError):
+        launcher.pick_port(8787, tries=3)
+
+
+class _AlwaysBusySocket:
+    """A socket whose bind() always fails (every port already taken)."""
+
+    def __init__(self, *a, **k):
+        pass
+
+    def bind(self, addr):
+        raise OSError("address already in use")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+# ------------------------------------------------------- single instance
+
+def test_acquire_lock_deuxieme_tentative_refusee(tmp_path):
+    p = tmp_path / "instance.lock"
+    first = launcher.acquire_lock(p, 8787)
+    assert first is not None
+    assert launcher.acquire_lock(p, 8787) is None  # another instance owns it
+    first.release()
+    assert launcher.acquire_lock(p, 8787) is not None  # released
+
+
+def test_acquire_lock_reclame_un_pid_mort(tmp_path, monkeypatch):
+    """A lock left by a crashed instance (power loss) must not block forever."""
+    p = tmp_path / "instance.lock"
+    p.write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: False)
+    lock = launcher.acquire_lock(p, 8788)
+    assert lock is not None
+    assert launcher._read_lock(p)[1] == 8788
+
+
+def test_acquire_lock_refuse_quand_le_pid_est_vivant(tmp_path, monkeypatch):
+    p = tmp_path / "instance.lock"
+    p.write_text("424242\n8787\n", encoding="utf-8")
+    monkeypatch.setattr(launcher, "_pid_alive", lambda pid: True)
+    assert launcher.acquire_lock(p, 8788) is None
+    assert launcher._read_lock(p)[0] == 424242  # untouched
+
+
+def test_lock_illisible_est_reclame(tmp_path):
+    p = tmp_path / "instance.lock"
+    p.write_text("pas un pid\n", encoding="utf-8")
+    assert launcher.acquire_lock(p, 8787) is not None
+
+
+def test_pid_alive_reconnait_le_pid_courant():
+    assert launcher._pid_alive(os.getpid()) is True
+    assert launcher._pid_alive(0) is False
+    assert launcher._pid_alive(-1) is False
+
+
+def test_lock_libere_a_la_sortie_du_with(tmp_path):
+    p = tmp_path / "instance.lock"
+    with launcher.acquire_lock(p, 8787) as lock:
+        assert lock.path == p
+        assert p.exists()
+    assert not p.exists()
+
+
+# ------------------------------------------------------------- environment
+
+def test_build_env_place_ffmpeg_en_tete_de_path(tmp_path):
+    env = launcher.build_env(tmp_path, 8787, tmp_path / "state")
+    first = env["PATH"].split(os.pathsep)[0]
+    assert first == str(tmp_path / "runtime" / "bin")
+
+
+def test_build_env_definit_les_quatre_variables(tmp_path):
+    state = tmp_path / "state"
+    env = launcher.build_env(tmp_path, 8787, state)
+    assert env["PYCLEAN_DATA_DIR"] == str(launcher.jobs_dir(state))
+    assert env["HF_HOME"] == str(launcher.cache_dir(state))
+    assert env["PYCLEAN_DESKTOP"] == "1"
+    assert env["PYCLEAN_PRELOAD_ASR"] == "0"
+
+
+def test_build_env_ne_perd_pas_le_chemin_existant(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    env = launcher.build_env(tmp_path, 8787, tmp_path / "state")
+    assert env["PATH"].split(os.pathsep)[1:] == ["/usr/bin", "/bin"]
+
+
+def test_build_env_ne_touche_pas_l_environnement_du_lanceur(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYCLEAN_DESKTOP", "0")
+    launcher.build_env(tmp_path, 8787, tmp_path / "state")
+    assert os.environ["PYCLEAN_DESKTOP"] == "0"  # copy, not in-place edit
+
+
+# --------------------------------------------------------------- server argv
+
+def test_server_command_sur_linux(tmp_path):
+    assert launcher.server_command(tmp_path, 8787) == [
+        str(tmp_path / "runtime" / "python" / "bin" / "python3"),
+        "-m", "uvicorn", "app.main:app",
+        "--host", "127.0.0.1", "--port", "8787", "--workers", "1",
+    ]
+
+
+def test_server_command_sur_windows(tmp_path, windows):
+    """`python.exe` sits at the root of the standalone prefix, not in bin/."""
+    root = Path(tmp_path)  # built before the patch: the flavour stays PosixPath
+    with windows:
+        cmd = launcher.server_command(root, 9000)
+    assert cmd[0] == str(root / "runtime" / "python" / "python.exe")
+    assert cmd[-2:] == ["--workers", "1"]
+    assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
+    assert PureWindowsPath(cmd[0]).name == "python.exe"
+
+
+def test_server_command_ne_depend_jamais_du_shell(tmp_path):
+    """argv only, like app/processor.py: nothing is ever run through a shell."""
+    cmd = launcher.server_command(tmp_path, 8787)
+    assert all(isinstance(a, str) for a in cmd)
+    assert not any(" " in a for a in cmd)
+
+
+# ------------------------------------------------------------ wait_ready
+
+def test_wait_ready_retourne_le_statut():
+    payload = {"status": "loading", "desktop": True}
+    got = launcher.wait_ready(
+        "http://127.0.0.1:8787/api/status", 5,
+        opener=opener_returning(FakeResponse(payload)),
+    )
+    assert got == payload
+
+
+def test_wait_ready_accepte_le_premier_echec_puis_reussit():
+    got = launcher.wait_ready(
+        "http://x/api/status", 5,
+        opener=opener_returning(urllib.error.URLError("refused"), FakeResponse({"status": "ready"})),
+        interval=0,
+    )
+    assert got == {"status": "ready"}
+
+
+def test_wait_ready_rend_la_main_si_le_delai_passe():
+    assert launcher.wait_ready(
+        "http://x/api/status", 0, opener=opener_returning(urllib.error.URLError("x")),
+    ) is None
+
+
+def test_wait_ready_rend_vite_si_le_serveur_est_mort():
+    assert launcher.wait_ready(
+        "http://x/api/status", 60, FakeProc(running=False),
+        opener=opener_returning(FakeResponse({"status": "ready"})),
+    ) is None
+
+
+def test_wait_ready_ignore_une_reponse_non_200():
+    assert launcher.wait_ready(
+        "http://x/api/status", 0, opener=opener_returning(FakeResponse(status=500)),
+    ) is None
+
+
+# --------------------------------------------------------------- terminate
+
+def test_terminate_appelle_terminate_puis_attend(monkeypatch):
+    killed = []
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(launcher.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(launcher.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    p = FakeProc()
+    launcher.terminate(p)
+    assert killed == [(FakeProc.pid, signal.SIGKILL)]  # ffmpeg included
+    assert p.calls[0] == "terminate"
+    assert "kill" not in p.calls
+
+
+def test_terminate_passe_en_kill_apres_le_delai(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(launcher.os, "killpg", lambda *a: None)
+    monkeypatch.setattr(launcher.os, "getpgid", lambda pid: pid)
+    p = FakeProc(hangs=True)
+    launcher.terminate(p, timeout=1)
+    assert p.calls[:3] == ["terminate", "wait(1)", "kill"]
+
+
+def test_terminate_ne_touche_rien_si_le_serveur_est_arrete(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(launcher.os, "killpg", lambda *a: pytest.fail("killpg"))
+    p = FakeProc(running=False)
+    launcher.terminate(p)
+    assert p.calls == []
+
+
+def test_terminate_sur_windows_ignore_le_group_de_processus(monkeypatch, windows):
+    """No os.killpg on Windows: it would raise AttributeError."""
+    with windows:
+        monkeypatch.delattr(launcher.os, "killpg", raising=False)
+    p = FakeProc()
+    launcher.terminate(p)
+    assert p.calls == ["terminate", "wait(10.0)"]
+
+
+def test_terminate_resiste_a_un_pid_inconnu(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+
+    def _raise(_pid):
+        raise ProcessLookupError("gone")
+
+    monkeypatch.setattr(launcher.os, "getpgid", _raise)
+    p = FakeProc()
+    launcher.terminate(p)  # must not raise
+    assert p.calls[0] == "terminate"
+
+
+# ------------------------------------------------------------------ window
+
+def test_open_ui_retombe_sur_le_navigateur_sans_pywebview(monkeypatch):
+    """pywebview is optional: its absence must not stop the app from opening."""
+    opened = []
+    monkeypatch.setitem(sys.modules, "webview", None)  # import webview -> None
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url) or True)
+    assert launcher.open_ui("http://127.0.0.1:8787") == "browser"
+    assert opened == ["http://127.0.0.1:8787"]
+
+
+def test_open_ui_utilise_pywebview_quand_il_est_là(monkeypatch):
+    calls = []
+    fake = types.ModuleType("webview")
+    fake.create_window = lambda *a, **k: calls.append(("window", a, k))
+    fake.start = lambda *a, **k: calls.append(("start", a, k))
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: pytest.fail("browser"))
+    assert launcher.open_ui("http://127.0.0.1:8787") == "webview"
+    assert [c[0] for c in calls] == ["window", "start"]
+
+
+def test_open_ui_eteint_par_pyclean_no_window(monkeypatch):
+    monkeypatch.setenv("PYCLEAN_NO_WINDOW", "1")
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: pytest.fail("browser"))
+    assert launcher.open_ui("http://127.0.0.1:8787") == ""
+
+
+# ------------------------------------------------------------------- misc
+
+def test_install_root_retrouve_le_repertoire_installation(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "static").mkdir()
+    assert launcher.install_root(tmp_path / "pyclean-audio.exe") == tmp_path
+
+
+def test_python_exe_suit_la_plateforme(tmp_path, windows):
+    root = Path(tmp_path)
+    assert launcher.python_exe(root).parts[-4:] == ("runtime", "python", "bin", "python3")
+    with windows:
+        assert launcher.python_exe(root).name == "python.exe"
+
+
+def test_un_etat_inutilisable_echoue_nettement(tmp_path):
+    """A state directory that cannot be created is a hard error: falling back to
+    the install directory would write under a read-only tree (Program Files)."""
+    blocker = tmp_path / "etat"
+    blocker.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(OSError):
+        launcher.make_state_dirs(blocker)
+
+
+def test_say_ne_leve_pas_sans_console(monkeypatch):
+    """The frozen Windows launcher has no console: sys.stdout is None."""
+    monkeypatch.setattr(sys, "stdout", None)
+    launcher._say("hello")  # must not raise
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    launcher._say("hello")
+
+
+def test_sigterm_declenche_le_nettoyage(monkeypatch):
+    """Without it, `kill` would leave the server (and its ffmpeg) running."""
+    caught = []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: caught.append((sig, handler)))
+    launcher._install_signal_handlers()
+    assert [sig for sig, _ in caught] == [signal.SIGTERM, signal.SIGHUP]
+    assert all(h.__name__ == "_stop" for _, h in caught)

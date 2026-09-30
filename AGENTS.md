@@ -178,7 +178,11 @@ English.
   card at once.
 - `app/config.py` — every limit and the retention settings, read from the
   environment (see the “Configuration” table in README.md); an unreadable or
-  zero value falls back to the default.
+  zero value falls back to the default. It also resolves **where the results
+  go**: `data_dir()` (a function, not a constant, so it is testable without
+  reloading `app.main`) returns `BASE/data/jobs` or `PYCLEAN_DATA_DIR`, which
+  the desktop launcher points at the per-user state directory; `DESKTOP`
+  (`PYCLEAN_DESKTOP`) is the flag the page reads through `GET /api/status`.
 - `app/transcriber.py` — wrapper around the Parakeet TDT transcription model
   (`nvidia/parakeet-tdt-0.6b-v3`, NeMo checkpoint loaded with
   `nemo.collections.asr.models.ASRModel.restore_from` from the local HuggingFace
@@ -251,6 +255,71 @@ English.
   (server keys present in both languages, no key shadowing across sections, same
   parameter names in both languages, the page's hardcoded English up to date,
   flags located under the badge and in order).
+
+## Desktop packaging (`packaging/`)
+
+One-click desktop build (Windows installer, `.deb`, portable archive) over the
+**same** application. Frozen runtime tree + thin launcher, **not** PyInstaller:
+torch is ~2.5 GB of files and a frozen torch is the fragile part; only the
+~300-line launcher is compiled (`--noconsole`, so no console window). Details and
+build commands: `packaging/README.md`.
+
+```
+<root>/  pyclean-audio.exe | pyclean-audio | launcher.py
+         runtime/python/   standalone relocatable CPython 3.11 + site-packages
+         runtime/bin/      bundled ffmpeg + ffprobe (found by BARE NAME)
+         app/ static/ LICENCE THIRD-PARTY-NOTICES.txt
+```
+
+```bash
+packaging/build_runtime.sh              # Linux  -> dist/pyclean-audio/
+packaging/linux/make-deb.sh             #         -> dist/*.deb
+packaging/linux/make-portable.sh        #         -> dist/*.tar.gz
+powershell -File packaging\build_runtime.ps1   # Windows -> dist/pyclean-audio/
+ISCC.exe packaging\installer\pyclean-audio.iss #        -> dist/*-setup.exe
+```
+
+What must not be broken there:
+
+- **`_kill()` in `app/processor.py` branches on `os.name == "nt"`** and calls
+  `p.kill()` only. **Do not "simplify" it back to the POSIX version**: on Windows
+  `os.killpg`, `os.getpgid` and `signal.SIGKILL` do not exist, and the
+  `except (ProcessLookupError, PermissionError, OSError)` does not catch the
+  resulting `AttributeError` — a cancellation or an ffmpeg timeout would raise
+  instead of reaching `cancelled`/`error`. `subprocess`' `start_new_session=True`
+  is accepted and ignored on Windows, and ffmpeg spawns no child there, so
+  killing the process is enough. Same rationale in the launcher's
+  `terminate()` (which *does* kill the group on POSIX, because `start_server()`
+  puts the server in its own session).
+- **The install tree is read-only at run time.** Results, logs, the HF cache and
+  the instance lock live in the per-user state directory (`PYCLEAN_DATA_DIR`,
+  `HF_HOME`, `PYCLEAN_HOME`) — `%LOCALAPPDATA%\pyclean-audio` or
+  `$XDG_DATA_HOME/pyclean-audio`. Nothing may write under `<root>`, or
+  `C:\Program Files` breaks for a normal user and uninstalling would delete the
+  user's work. `app/config.py:data_dir()` is what honours `PYCLEAN_DATA_DIR`.
+- **torch first, from an explicit index.** LavaSR depends on `torch`: installed
+  later it resolves the default (CUDA) wheel on its own (+3 GB on a machine
+  without a GPU). The build asserts `torch.version.cuda is None` and that
+  `nemo` is **not** importable, and that `ffmpeg`/`ffprobe` run.
+- **`launcher.py` is standard library only and must stay free of import-time
+  side effects** — that is what lets `tests/test_launcher.py` cover the single
+  instance, the port, the environment, `wait_ready`, `terminate` and `open_ui`
+  without a server, a network or a window. `pywebview` is optional: the launcher
+  falls back to the default browser.
+- **`--workers 1` is mandatory** in `server_command()`, same reason as in
+  `run.sh` and in the Dockerfile: one in-process queue, job state in a dict,
+  lock-guarded model singletons.
+- **127.0.0.1 only.** The API has no authentication; the launcher never binds
+  `0.0.0.0`, it walks upward with `pick_port()` instead.
+- **The desktop flag.** The launcher sets `PYCLEAN_DESKTOP=1`;
+  `GET /api/status` carries `desktop`, and the page then uses
+  `ui.asr_missing_desktop` / `ui.opt_transcribe_missing_desktop` (EN **and** FR)
+  instead of the wording that tells the user to run `./run.sh --asr`. The
+  server-side `transcribe_unavailable` wording in `app/messages.py` stays as it
+  is: it is the CLI/API message.
+- v1 ships **CPU only, without transcription** (NeMo is ~2.4 GB), and the
+  Windows installer is **unsigned** (SmartScreen: "more info → run anyway").
+  A CUDA build is `TORCH_INDEX_URL=…/whl/cu130`.
 
 ## Model constraints to respect
 

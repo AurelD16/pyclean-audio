@@ -487,6 +487,14 @@ def test_status_donne_la_disponibilite_de_nemo(data_dir):
     assert isinstance(s["transcriber"]["available"], bool)
 
 
+def test_status_expose_le_mode_desktop(data_dir, monkeypatch):
+    """The page switches to wording that does not send the user to a terminal."""
+    monkeypatch.setattr(m, "DESKTOP", False)
+    assert m.status()["desktop"] is False
+    monkeypatch.setattr(m, "DESKTOP", True)
+    assert m.status()["desktop"] is True
+
+
 def test_transcribe_refuse_si_nemo_absent(data_dir, monkeypatch):
     """An explicit 400 beats a job failing on ModuleNotFound."""
     from fastapi import HTTPException

@@ -62,6 +62,18 @@ def _kill(p: subprocess.Popen) -> None:
     grandchild survives, the pipe never closes and the stdout read stays blocked
     forever.
     """
+    if os.name == "nt":
+        # Windows has no process group to kill here: os.killpg, os.getpgid and
+        # signal.SIGKILL do not exist (subprocess accepts start_new_session and
+        # ignores it), and the except below would not catch the AttributeError
+        # they would raise — a cancellation or an ffmpeg failure would blow up
+        # instead of reaching "cancelled"/"error". ffmpeg spawns no child of its
+        # own on Windows, so killing the process is enough.
+        try:
+            p.kill()
+        except OSError:
+            pass
+        return
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):

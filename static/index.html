@@ -386,6 +386,7 @@
       "ui.asr_loading": " · Loading Parakeet…",
       "ui.asr_error": " · Parakeet error",
       "ui.asr_missing": " · Parakeet not installed (./run.sh --asr)",
+      "ui.asr_missing_desktop": " · Transcription not included in this version",
       "ui.mode_file": "File",
       "ui.mode_folder": "Folder (recursive)",
       "ui.drop_file_title": "Drop an audio or video file here",
@@ -412,6 +413,7 @@
       "ui.opt_transcribe": "Transcribe the cleaned audio",
       "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
+      "ui.opt_transcribe_missing_desktop": "— unavailable: transcription is not part of this installed version (audio cleaning only).",
       "ui.go": "Enhance audio",
       "ui.go_n": "Enhance audio — {n} file(s)",
       "ui.cancel": "Cancel processing",
@@ -476,6 +478,7 @@
       "ui.asr_loading": " · Chargement Parakeet…",
       "ui.asr_error": " · Parakeet en erreur",
       "ui.asr_missing": " · Parakeet non installé (./run.sh --asr)",
+      "ui.asr_missing_desktop": " · Transcription non incluse dans cette version",
       "ui.mode_file": "Fichier",
       "ui.mode_folder": "Dossier (récursif)",
       "ui.drop_file_title": "Glissez un fichier audio ou vidéo ici",
@@ -502,6 +505,7 @@
       "ui.opt_transcribe": "Transcrire l'audio nettoyé",
       "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
+      "ui.opt_transcribe_missing_desktop": "— indisponible : la transcription ne fait pas partie de cette version installée (nettoyage audio uniquement).",
       "ui.go": "Améliorer l'audio",
       "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
       "ui.cancel": "Annuler le traitement",
@@ -1241,11 +1245,16 @@ $("again").addEventListener("click", () => {
 // disponible, pour ne pas décocher ce que l'utilisateur vient de cocher ; quand
 // elle ne l'est pas, on décoche (sinon on enverrait transcribe=true).
 let asrMissing = false;
+// Desktop build (status.desktop): there is no shell script to run, so the
+// wording must not send the user back to a terminal.
+let desktopMode = false;
 
 function paintTranscribeRow() {
   $("transcribe").disabled = asrMissing;
   $("transcribeRow").classList.toggle("off", asrMissing);
-  $("transcribeDesc").textContent = t(asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
+  const key = !asrMissing ? "ui.opt_transcribe_ok"
+    : (desktopMode ? "ui.opt_transcribe_missing_desktop" : "ui.opt_transcribe_missing");
+  $("transcribeDesc").textContent = t(key);
 }
 
 function setTranscribeEnabled(on) {
@@ -1266,11 +1275,12 @@ function paintBadge() {
   // .available : false = nemo_toolkit[asr] absent (run.sh n'installe que les
   // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
   asrMissing = st.available === false;
+  desktopMode = s.desktop === true;
   let asr = "";
   if (st.status === "ready") asr = t("ui.asr_ready");
   else if (st.status === "loading") asr = t("ui.asr_loading");
   else if (st.status === "error") asr = t("ui.asr_error");
-  else if (asrMissing) asr = t("ui.asr_missing");
+  else if (asrMissing) asr = t(desktopMode ? "ui.asr_missing_desktop" : "ui.asr_missing");
   if (s.status === "ready") {
     b.classList.add("ready");
     b.textContent = t("ui.badge_ready",

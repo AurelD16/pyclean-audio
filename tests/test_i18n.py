@@ -129,3 +129,38 @@ def test_le_texte_par_defaut_de_la_page_est_anglais(html, page_dict):
     otherwise the first paint is not in the announced language."""
     for key, text in re.findall(r'data-i18n="([\w.]+)">([^<]*)</', html):
         assert text.strip() == page_dict["ui"]["en"][key].strip(), key
+
+
+# ------------------------------------------------------------- desktop build
+
+DESKTOP_KEYS = ("ui.asr_missing_desktop", "ui.opt_transcribe_missing_desktop")
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_libelles_du_bureau_dans_les_deux_langues(page_dict, lang):
+    """The packaged run shows these two instead of the "./run.sh --asr" ones."""
+    for key in DESKTOP_KEYS:
+        assert page_dict["ui"][lang][key].strip(), key
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_aucun_libelle_du_bureau_ne_renvoie_au_terminal(page_dict, lang):
+    """Nobody who double-clicked an .exe can run ./run.sh: the wording must not
+    tell them to."""
+    for key in DESKTOP_KEYS:
+        assert "run.sh" not in page_dict["ui"][lang][key], key
+
+
+def test_la_page_bascule_sur_les_libelles_du_bureau(html):
+    """`status.desktop` drives the choice: without the switch the new keys would
+    be dead weight in the dictionary."""
+    assert "s.desktop === true" in html
+    for key in DESKTOP_KEYS:
+        # once in the EN dictionary, once in the FR one, once in the script
+        assert html.count(f'"{key}"') == 3, key
+
+
+def test_libelle_bureau_ne_masque_pas_une_cle_du_serveur(page_dict):
+    """They are page keys: `ui` wins over `server`, they never shadow one."""
+    for key in DESKTOP_KEYS:
+        assert key not in page_dict["server"]["en"]

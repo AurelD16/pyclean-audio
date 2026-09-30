@@ -5,6 +5,9 @@ variable must never stop the server from starting.
 """
 
 import os
+from pathlib import Path
+
+BASE = Path(__file__).resolve().parent.parent
 
 
 def env_int(name: str, default: int) -> int:
@@ -22,6 +25,19 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "oui", "yes", "on")
 
 
+def data_dir() -> Path:
+    """Where the jobs (results) are written.
+
+    `BASE/data/jobs` by default, unchanged; `PYCLEAN_DATA_DIR` overrides it.
+    The desktop launcher sets it, because its install directory is read-only
+    for a normal user (`C:\\Program Files`) and uninstalling must not take the
+    results away. A function, not a constant: a test exercises it without
+    reloading `app.main`.
+    """
+    override = os.environ.get("PYCLEAN_DATA_DIR", "").strip()
+    return Path(override) if override else BASE / "data" / "jobs"
+
+
 # --- processing limits -------------------------------------------------------
 MAX_SIZE = env_int("PYCLEAN_MAX_SIZE", 2 * 1024**3)        # bytes, per file
 MAX_DURATION = env_int("PYCLEAN_MAX_DURATION", 10_000)     # seconds (~2 h 47)
@@ -37,3 +53,10 @@ QUEUE_MAX = env_int("PYCLEAN_QUEUE_MAX", 20)     # max waiting requests
 
 # --- models -------------------------------------------------------------------
 PRELOAD_ASR = env_flag("PYCLEAN_PRELOAD_ASR", False)  # load Parakeet at boot
+
+# --- distribution --------------------------------------------------------------
+# Set by the desktop launcher (packaging/launcher/launcher.py). The packaged
+# build has no shell script to run: the page reads `desktop` in GET /api/status
+# and drops its "./run.sh --asr" wording. False everywhere else, so the CLI and
+# the API are untouched.
+DESKTOP = env_flag("PYCLEAN_DESKTOP", False)
