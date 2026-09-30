@@ -3,6 +3,12 @@
 **Local, single-user audio restoration for audio and video files.** Runs entirely
 on your machine: a FastAPI server and one HTML page, no cloud, no account.
 
+On top of that, it can **transcribe the cleaned audio** with
+[Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+(NVIDIA, via NeMo): a plain-text transcript, plus timed `.srt` subtitles when
+the model returns timestamps — about 20 s of GPU time for 54 min of audio. It
+is one flag away: `./run.sh --asr` → [Transcription](#transcription-optional).
+
 Uses [LavaSR v2](https://github.com/ysharma3501/LavaSR) (`LavaEnhance2`) to
 extend the bandwidth of degraded recordings up to **48 kHz**, with optional
 denoising (UL-UNAS). An NVIDIA GPU is used automatically when available.
@@ -16,6 +22,9 @@ the model.
 | --------- | ------------------------------------------------------------------- | -------------------------------------------------------- |
 | Audio     | decode → mono 48 kHz → LavaSR v2                                    | Enhanced MP3 192 kbit/s + WAV 48 kHz, A/B against source  |
 | Video     | extract audio → LavaSR v2 → remux (video stream copied, untouched) | MP4 with the enhanced audio, plus standalone MP3 and WAV  |
+
+Both kinds of input can additionally yield a transcript and timed subtitles
+(`--transcribe`, or the web checkbox).
 
 ## Contents
 
