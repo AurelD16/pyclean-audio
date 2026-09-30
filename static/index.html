@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pyclean-audio — Amélioration audio</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b24; --panel2: #1d2430; --line: #2a3342;
+    --text: #e6ebf2; --muted: #8b98ab; --accent: #f97316; --accent2: #fb923c;
+    --ok: #34d399; --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
+  h1 .logo { color: var(--accent); }
+  .badge {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); background: var(--panel);
+  }
+  .badge.ready { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
+  .badge.loading { color: var(--accent2); border-color: rgba(251, 146, 60, .4); }
+  .badge.error { color: var(--err); border-color: rgba(248, 113, 113, .4); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 22px; margin-bottom: 18px;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; margin-bottom: 14px; }
+  .seg button {
+    background: var(--panel2); color: var(--muted); border: none; padding: 7px 14px;
+    font-size: 13px; cursor: pointer;
+  }
+  .seg button.active { background: var(--accent); color: #1a1205; font-weight: 600; }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 12px; padding: 44px 20px;
+    text-align: center; cursor: pointer; transition: all .15s; background: var(--panel2);
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #202a3a; }
+  .drop .big { font-size: 17px; margin-bottom: 6px; }
+  .drop .hint { color: var(--muted); font-size: 13px; }
+  .drop .file { color: var(--accent2); font-weight: 600; }
+
+  .opts { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; }
+  .opt { display: flex; flex-direction: column; gap: 6px; }
+  .opt label.t { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  select, input[type=number] {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font-size: 14px; min-width: 170px;
+  }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 22px; cursor: pointer; }
+  .check input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .check span.desc { color: var(--muted); font-size: 12.5px; }
+  .check.off { opacity: .55; cursor: not-allowed; }
+  .check.off span.desc { color: var(--accent2); }
+  .transcript {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; font-size: 13.5px; line-height: 1.55; margin: 0;
+    max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  button.primary {
+    margin-top: 20px; width: 100%; padding: 13px; border: none; border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #1a1205;
+    font-size: 15px; font-weight: 700; cursor: pointer; transition: opacity .15s;
+  }
+  button.primary:disabled { opacity: .45; cursor: not-allowed; }
+
+  .progress-card { display: none; }
+  .stage { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 99px; overflow: hidden; }
+  .bar > div {
+    height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 99px; transition: width .4s;
+  }
+  .bar.indet > div {
+    width: 35% !important; animation: slide 1.2s ease-in-out infinite alternate;
+  }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
+
+  .error {
+    display: none; background: rgba(248, 113, 113, .1); border: 1px solid rgba(248, 113, 113, .4);
+    color: var(--err); border-radius: 10px; padding: 14px; margin-top: 14px; font-size: 14px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  .results { display: none; }
+  .rtitle { font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+  .player { margin-bottom: 14px; }
+  .player .lbl { font-size: 13px; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+  audio, video { width: 100%; border-radius: 10px; background: var(--panel2); }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+  .btns a {
+    text-decoration: none; font-size: 13.5px; font-weight: 600; padding: 9px 14px;
+    border-radius: 9px; border: 1px solid var(--line); color: var(--text);
+    background: var(--panel2); transition: border-color .15s;
+  }
+  .btns a:hover { border-color: var(--accent); }
+  .btns a.dl { border-color: var(--accent); color: var(--accent2); }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
+  .hidden { display: none !important; }
+
+  .ghost {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 9px; padding: 9px 14px; font-size: 13px; cursor: pointer;
+    font-family: inherit; transition: border-color .15s, color .15s;
+  }
+  .ghost:hover { border-color: var(--err); color: var(--err); }
+  .ghost.sm { padding: 4px 9px; font-size: 12px; }
+  .ghost.on { border-color: var(--accent); color: var(--accent2); }
+  .progress-actions { display: flex; gap: 10px; margin-top: 14px; }
+  .foot-actions { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
+  .ab { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .ab .lbl {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    font-size: 13px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .abbtns { display: flex; align-items: center; gap: 8px; }
+  .abbtns label.sm { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .ab.syncing audio { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .flist {
+    border: 1px solid var(--line); border-radius: 10px; overflow-y: auto;
+    max-height: 340px; margin-bottom: 6px;
+  }
+  .frow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13.5px;
+  }
+  .frow:last-child { border-bottom: none; }
+  .frow .fname { flex: 1 1 240px; word-break: break-all; }
+  .frow .fstate { font-size: 12px; color: var(--ok); white-space: nowrap; }
+  .frow.err .fstate { color: var(--err); }
+  .frow .ferr { width: 100%; color: var(--err); font-size: 12px; word-break: break-word; }
+  .frow .flinks { display: flex; gap: 8px; }
+  .frow .flinks a {
+    font-size: 12px; font-weight: 600; text-decoration: none; padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: 7px; color: var(--accent2);
+  }
+  .frow .flinks a:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="logo">pyclean-audio</span></h1>
+    <div id="modelBadge" class="badge">Modèle…</div>
+  </header>
+
+  <div class="card">
+    <div class="seg">
+      <button id="modeFile" class="active">Fichier</button>
+      <button id="modeFolder">Dossier (récursif)</button>
+    </div>
+    <div id="drop" class="drop">
+      <div class="big" id="dropTitle">Glissez un fichier audio ou vidéo ici</div>
+      <div class="hint" id="dropHint">ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…</div>
+    </div>
+    <input type="file" id="fileInput" hidden
+           accept=".wav,.mp3,.flac,.ogg,.oga,.m4a,.aac,.opus,.wma,.aiff,.aif,.mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.mpg,.mpeg,.wmv,.flv,audio/*,video/*">
+    <input type="file" id="folderInput" hidden webkitdirectory directory multiple>
+
+    <div class="opts">
+      <div class="opt">
+        <label class="t" for="inputSr">Résolution d'entrée</label>
+        <select id="inputSr">
+          <option value="16000" selected>Automatique — 16 kHz (recommandé)</option>
+          <option value="8000">8 kHz (source très dégradée)</option>
+          <option value="24000">24 kHz</option>
+        </select>
+      </div>
+      <div class="opt">
+        <label class="t" for="cutoff">Cutoff (Hz, avancé)</label>
+          <input type="number" id="cutoff" placeholder="auto" min="1000" step="100">
+      </div>
+      <div class="opt hidden" id="formatOpt">
+        <label class="t" for="outFormat">Format de sortie</label>
+        <select id="outFormat">
+          <option value="mp3" selected>MP3 (192 kbit/s)</option>
+          <option value="wav">WAV 48 kHz (non compressé)</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" id="denoise">
+      <span><b>Réduire le bruit</b> <span class="desc">— active le débruiteur UL-UNAS avant l'extension de bande (à n'utiliser que si l'audio est bruité)</span></span>
+    </label>
+    <label class="check" id="transcribeRow">
+      <input type="checkbox" id="transcribe">
+      <span><b>Transcrire l'audio nettoyé</b> <span class="desc" id="transcribeDesc">— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)</span></span>
+    </label>
+
+    <button class="primary" id="go" disabled>Améliorer l'audio</button>
+    <div class="error" id="errorBox"></div>
+  </div>
+
+  <div class="card progress-card" id="progressCard">
+    <div class="stage" id="stageText">…</div>
+    <div class="bar" id="bar"><div></div></div>
+    <div class="progress-actions hidden" id="progressActions">
+      <button class="ghost" id="cancelBtn">Annuler le traitement</button>
+    </div>
+  </div>
+
+  <div class="card results" id="results">
+    <div class="rtitle" id="resultTitle"></div>
+
+    <div id="folderBlock" class="hidden">
+      <div class="flist" id="folderList"></div>
+    </div>
+
+    <div id="singleBlock">
+      <div id="videoBlock" class="hidden">
+        <div class="player">
+          <div class="lbl"><span>Vidéo avec audio amélioré</span></div>
+          <video id="videoPlayer" controls></video>
+        </div>
+      </div>
+
+      <div class="ab" id="abBlock">
+        <div class="lbl">
+          <span>Comparaison A/B — la lecture est liée (même timecode)</span>
+          <span class="abbtns">
+            <button class="ghost sm" id="playA" type="button">▶ Origine</button>
+            <button class="ghost sm" id="playB" type="button">▶ Amélioré</button>
+            <label class="sm"><input type="checkbox" id="abLink" checked> lié</label>
+          </span>
+        </div>
+        <div class="player">
+          <div class="lbl"><span>Audio d'origine (décodé 48 kHz mono)</span></div>
+          <audio id="origPlayer" controls preload="metadata"></audio>
+        </div>
+        <div class="player">
+          <div class="lbl"><span>Audio amélioré — LavaSR v2 (48 kHz)</span></div>
+          <audio id="enhPlayer" controls preload="metadata"></audio>
+        </div>
+      </div>
+
+      <div class="player" id="transcriptBlock" style="display:none">
+        <div class="lbl"><span>Transcription — Parakeet TDT</span></div>
+        <pre id="transcriptText" class="transcript"></pre>
+      </div>
+    </div>
+
+    <div class="btns" id="btns"></div>
+    <div class="note" id="note"></div>
+    <div class="foot-actions">
+      <button class="ghost" id="deleteBtn">Supprimer les résultats</button>
+      <button class="primary" id="again">Traiter un autre fichier</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let mode = "file";
+let currentFile = null;
+let currentFiles = [];
+let jobId = null;
+let pollTimer = null;
+
+const drop = $("drop"), fileInput = $("fileInput"), folderInput = $("folderInput"), go = $("go");
+const dropTitle = $("dropTitle"), dropHint = $("dropHint");
+
+const ALLOWED_EXT = new Set([
+  ".wav", ".mp3", ".flac", ".ogg", ".oga", ".m4a", ".aac", ".opus",
+  ".wma", ".aiff", ".aif", ".mp4", ".mkv", ".webm", ".mov", ".avi",
+  ".m4v", ".ts", ".mpg", ".mpeg", ".wmv", ".flv",
+]);
+function extOf(name) {
+  const i = name.toLowerCase().lastIndexOf(".");
+  return i >= 0 ? name.slice(i) : "";
+}
+
+function fmtSize(b) {
+  if (b > 1e9) return (b / 1e9).toFixed(2) + " Go";
+  if (b > 1e6) return (b / 1e6).toFixed(1) + " Mo";
+  return (b / 1e3).toFixed(0) + " Ko";
+}
+
+function setFile(f) {
+  currentFile = f;
+  currentFiles = [];
+  dropTitle.textContent = "Fichier sélectionné : " + f.name;
+  dropHint.textContent = fmtSize(f.size) + " — cliquez ou glissez un autre fichier pour remplacer";
+  go.disabled = false;
+  go.textContent = "Améliorer l'audio";
+  $("errorBox").style.display = "none";
+}
+
+function setFolder(raw) {
+  const seen = new Set();
+  currentFiles = raw.filter(({ file, rel }) => {
+    if (seen.has(rel)) return false;
+    seen.add(rel);
+    return ALLOWED_EXT.has(extOf(file.name));
+  });
+  currentFile = null;
+  const total = currentFiles.reduce((s, x) => s + x.file.size, 0);
+  const dirs = [...new Set(
+    currentFiles.map(x => x.rel.split("/").slice(0, -1).join("/")).filter(Boolean)
+  )];
+  dropTitle.textContent = `Dossier : ${currentFiles.length} fichier(s) audio/vidéo`;
+  dropHint.textContent = currentFiles.length
+    ? `${fmtSize(total)}${dirs.length ? " — " + dirs.length + " sous-dossier(s)" : ""} — cliquez ou glissez un autre dossier pour remplacer`
+    : "Aucun fichier audio/vidéo pris en charge dans ce dossier";
+  go.disabled = currentFiles.length === 0;
+  go.textContent = currentFiles.length
+    ? `Améliorer l'audio — ${currentFiles.length} fichier(s)`
+    : "Améliorer l'audio";
+  $("errorBox").style.display = "none";
+}
+
+function setMode(m) {
+  mode = m;
+  $("modeFile").classList.toggle("active", m === "file");
+  $("modeFolder").classList.toggle("active", m === "folder");
+  $("formatOpt").classList.toggle("hidden", m === "file");
+  currentFile = null;
+  currentFiles = [];
+  fileInput.value = "";
+  folderInput.value = "";
+  go.disabled = true;
+  go.textContent = "Améliorer l'audio";
+  if (m === "file") {
+    dropTitle.textContent = "Glissez un fichier audio ou vidéo ici";
+    dropHint.textContent = "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…";
+  } else {
+    dropTitle.textContent = "Glissez un dossier ici (sous-dossiers inclus)";
+    dropHint.textContent = "ou cliquez pour parcourir — tous les fichiers audio/vidéo seront détectés récursivement";
+  }
+  $("errorBox").style.display = "none";
+}
+
+$("modeFile").addEventListener("click", () => setMode("file"));
+$("modeFolder").addEventListener("click", () => setMode("folder"));
+
+drop.addEventListener("click", () => (mode === "folder" ? folderInput : fileInput).click());
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files.length) setFile(e.target.files[0]);
+});
+folderInput.addEventListener("change", (e) => {
+  if (!e.target.files.length) return;
+  setFolder(Array.from(e.target.files)
+    .map(f => ({ file: f, rel: f.webkitRelativePath || f.name })));
+});
+["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.add("over");
+}));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.remove("over");
+}));
+drop.addEventListener("drop", (e) => {
+  if (mode === "file") {
+    if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+    return;
+  }
+  const items = e.dataTransfer.items;
+  const entries = [];
+  if (items) {
+    for (const it of items) {
+      try {
+        const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+        if (en) entries.push(en);
+      } catch (_) {}
+    }
+  }
+  if (entries.length) {
+    const out = [];
+    Promise.all(entries.map(en => readEntry(en, "", out)))
+      .then(() => setFolder(out));
+  } else if (e.dataTransfer.files.length) {
+    setFolder(Array.from(e.dataTransfer.files)
+      .map(f => ({ file: f, rel: f.name })));
+  }
+});
+
+function readEntry(entry, dir, out) {
+  return new Promise((resolve) => {
+    if (!entry) return resolve();
+    if (entry.isFile) {
+      entry.file((f) => { out.push({ file: f, rel: dir + f.name }); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const rd = entry.createReader();
+      const acc = [];
+      const readBatch = () => rd.readEntries((es) => {
+        if (es.length) { acc.push(...es); readBatch(); }
+        else Promise.all(acc.map(en => readEntry(en, dir + entry.name + "/", out))).then(resolve);
+      }, () => resolve());
+      readBatch();
+    } else resolve();
+  });
+}
+
+function showProgress(stage, progress) {
+  $("progressCard").style.display = "block";
+  $("results").style.display = "none";
+  $("stageText").textContent = stage;
+  const bar = $("bar");
+  bar.classList.remove("indet");
+  bar.firstElementChild.style.width = Math.round(progress * 100) + "%";
+}
+
+function stopPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+  $("progressActions").classList.add("hidden");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/jobs/" + jobId);
+    if (!r.ok) throw new Error("Job introuvable (serveur redémarré ?)");
+    const job = await r.json();
+    if (job.state === "queued") {
+      // l'inférence est sérialisée : un traitement attend son tour
+      const pos = job.queue_position || 0;
+      showProgress(pos > 0 ? `En file d'attente — ${pos} traitement(s) avant celui-ci…`
+                           : "En file d'attente — prochain traitement…", 0);
+      $("progressActions").classList.remove("hidden");
+    } else if (job.state === "running") {
+      showProgress(job.stage, job.progress);
+      $("progressActions").classList.remove("hidden");
+    } else if (job.state === "done") {
+      stopPolling();
+      renderResults(job);
+    } else if (job.state === "cancelled") {
+      stopPolling();
+      go.disabled = false;
+      $("progressCard").style.display = "none";
+      $("results").style.display = "block";
+      $("resultTitle").textContent = "Traitement annulé";
+      $("note").textContent = "Les fichiers produits ont été supprimés du serveur.";
+    } else if (job.state === "error") {
+      stopPolling();
+      showError(job.error || "Erreur inconnue");
+    }
+  } catch (e) {
+    stopPolling();
+    showError(e.message);
+  }
+}
+
+async function cancelJob() {
+  if (!jobId) return;
+  $("cancelBtn").disabled = true;
+  $("cancelBtn").textContent = "Annulation…";
+  try {
+    const r = await fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || "Erreur " + r.status);
+    }
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function deleteJob() {
+  if (!jobId) return;
+  $("deleteBtn").disabled = true;
+  try {
+    const r = await fetch("/api/jobs/" + jobId, { method: "DELETE" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || "Erreur " + r.status);
+    }
+  } catch (e) {
+    $("deleteBtn").disabled = false;
+    showError(e.message);
+    return;
+  }
+  $("errorBox").style.display = "none";
+  $("again").click();
+}
+
+function showError(msg) {
+  stopPolling();
+  go.disabled = false;
+  $("progressCard").style.display = "none";
+  const box = $("errorBox");
+  box.textContent = msg;
+  box.style.display = "block";
+}
+
+function fileUrl(name) { return "/api/jobs/" + jobId + "/file/" + name; }
+function fileUrlAt(index, name) { return "/api/jobs/" + jobId + "/file/" + index + "/" + name; }
+
+/* ------------------------------------------------------------------ A/B lié
+   Les deux lecteurs d'origine et d'ont la même durée : on les garde sur le même
+   timecode pour que la comparaison porte sur le même passage. */
+const AB = { master: null, syncing: false, linked: true };
+
+function abLinked() { return $("abLink").checked; }
+
+function abSync(from) {
+  if (!abLinked() || AB.syncing) return;
+  const other = from === $("origPlayer") ? $("enhPlayer") : $("origPlayer");
+  if (!other.src || !Number.isFinite(other.duration)) return;
+  AB.syncing = true;
+  try {
+    if (Math.abs(other.currentTime - from.currentTime) > 0.05) {
+      other.currentTime = from.currentTime;
+    }
+    if (from.paused && !other.paused) other.pause();
+    if (!from.paused && other.paused) other.play().catch(() => {});
+  } finally {
+    AB.syncing = false;
+  }
+}
+
+function abPlay(which) {
+  const master = which === "A" ? $("origPlayer") : $("enhPlayer");
+  const other = which === "A" ? $("enhPlayer") : $("origPlayer");
+  // on repart du début si on est à la fin, sinon on bascule au même timecode
+  if (master.ended || master.currentTime >= (master.duration || 0) - 0.1) {
+    master.currentTime = 0;
+    other.currentTime = 0;
+  } else {
+    other.currentTime = master.currentTime;
+  }
+  master.play().catch(() => {});
+  if (abLinked()) other.play().catch(() => {});
+  $("playA").classList.toggle("on", which === "A");
+  $("playB").classList.toggle("on", which === "B");
+}
+
+function setupAB() {
+  const orig = $("origPlayer"), enh = $("enhPlayer");
+  for (const p of [orig, enh]) {
+    p.preservesPitch = false;  // comparaison à vitesse réelle
+    p.addEventListener("timeupdate", () => abSync(p));
+    p.addEventListener("play", () => abSync(p));
+    p.addEventListener("pause", () => abSync(p));
+    p.addEventListener("seeked", () => abSync(p));
+    p.addEventListener("ended", () => {
+      const other = p === orig ? enh : orig;
+      other.pause();
+      $("playA").classList.remove("on");
+      $("playB").classList.remove("on");
+    });
+  }
+
+  $("playA").onclick = () => abPlay("A");
+  $("playB").onclick = () => abPlay("B");
+  $("abLink").onchange = (e) => $("abBlock").classList.toggle("linked", e.target.checked);
+  $("abBlock").classList.add("linked");
+}
+
+function renderResults(job) {
+  stopPolling();
+  go.disabled = false;
+  $("progressCard").style.display = "none";
+  $("results").style.display = "block";
+
+  const btns = $("btns");
+  btns.innerHTML = "";
+
+  if (job.kind === "folder") {
+    renderFolderResults(job, btns);
+    return;
+  }
+
+  $("folderBlock").classList.add("hidden");
+  $("singleBlock").style.display = "block";
+
+  const stem = job.stem || "fichier";
+  const isVideo = job.kind === "video";
+  $("resultTitle").textContent = (isVideo ? "Vidéo" : "Audio") + " amélioré : " + job.filename;
+
+  $("origPlayer").src = fileUrl("original_wav");
+  $("enhPlayer").src = fileUrl("enhanced_wav");
+  setupAB();
+
+  const tb = $("transcriptBlock");
+  tb.style.display = "none";
+  $("transcriptText").textContent = "";
+  if (job.artifacts && job.artifacts.transcript) {
+    tb.style.display = "block";
+    fetch(fileUrl("transcript")).then(r => r.ok ? r.text() : "")
+      .then(t => { $("transcriptText").textContent = t || "(vide)"; })
+      .catch(() => { $("transcriptText").textContent = "(indisponible)"; });
+  }
+
+  const vb = $("videoBlock");
+  if (isVideo) {
+    vb.classList.remove("hidden");
+    $("videoPlayer").src = fileUrl("video");
+  } else {
+    vb.classList.add("hidden");
+  }
+
+  const links = [];
+  if (job.artifacts && job.artifacts.enhanced_mp3)
+    links.push(["enhanced_mp3", "Télécharger l'audio (MP3 192 kbit/s)", true]);
+  if (isVideo) links.push(["video", "Télécharger la vidéo (MP4)", true]);
+  links.push(["enhanced_wav", "Télécharger l'audio (WAV 48 kHz)", true]);
+  if (job.artifacts && job.artifacts.transcript)
+    links.push(["transcript", "Télécharger la transcription (TXT)", true]);
+  if (job.artifacts && job.artifacts.transcript_srt)
+    links.push(["transcript_srt", "Télécharger les sous-titres (SRT)", true]);
+  links.push(["original_wav", "Télécharger l'audio d'origine (WAV)", false]);
+  for (const [name, label, primary] of links) {
+    const a = document.createElement("a");
+    a.href = fileUrl(name);
+    a.textContent = label;
+    a.download = "";
+    if (primary) a.className = "dl";
+    btns.appendChild(a);
+  }
+
+  $("note").textContent = isVideo
+    ? "La piste vidéo est conservée telle quelle (sans ré-encodage) ; l'audio est remplacé par la version améliorée (AAC 192 kbit/s, 48 kHz). L'audio amélioré est aussi disponible en MP3 et en WAV. Les sous-titres éventuels ne sont pas repris."
+    : "L'audio est restitué en 48 kHz mono, bande passante étendue par le modèle LavaSR v2. Téléchargeable en MP3 (192 kbit/s) ou en WAV (48 kHz, non compressé).";
+
+  $("results").scrollIntoView({ behavior: "smooth" });
+}
+
+function renderFolderResults(job, btns) {
+  $("singleBlock").style.display = "none";
+  $("folderBlock").classList.remove("hidden");
+
+  const files = job.files || [];
+  const ok = files.filter(f => f.state === "done").length;
+  const ko = files.filter(f => f.state === "error").length;
+  const fmt = job.output_format || "mp3";
+  $("resultTitle").textContent =
+    `Dossier traité : ${ok}/${files.length} fichier(s) réussi(s)` + (ko ? ` — ${ko} en échec` : "")
+    + (fmt === "mp3" ? " — format de sortie : MP3" : " — format de sortie : WAV");
+
+  const list = $("folderList");
+  list.innerHTML = "";
+  for (const [i, f] of files.entries()) {
+    const row = document.createElement("div");
+    row.className = "frow" + (f.state === "error" ? " err" : "");
+    const name = document.createElement("span");
+    name.className = "fname";
+    name.textContent = f.relpath;
+    const state = document.createElement("span");
+    state.className = "fstate";
+    state.textContent = f.state === "done" ? "✓ Terminé" : f.state === "error" ? "✗ Erreur" : f.state;
+    row.appendChild(name);
+    row.appendChild(state);
+    if (f.state === "done") {
+      const links = document.createElement("div");
+      links.className = "flinks";
+      const mk = (href, label) => {
+        const a = document.createElement("a");
+        a.href = href;
+        a.textContent = label;
+        a.download = "";
+        return a;
+      };
+      const artKey = fmt === "mp3" ? "enhanced_mp3" : "enhanced_wav";
+      const artLabel = fmt === "mp3" ? "MP3 amélioré" : "WAV amélioré";
+      if (f.artifacts && f.artifacts[artKey]) {
+        links.appendChild(mk(fileUrlAt(i, artKey), artLabel));
+      } else if (f.artifacts && f.artifacts.enhanced_wav) {
+        links.appendChild(mk(fileUrlAt(i, "enhanced_wav"), "WAV amélioré"));
+      }
+      if (f.kind === "video") links.appendChild(mk(fileUrlAt(i, "video"), "MP4"));
+      if (f.artifacts && f.artifacts.transcript)
+        links.appendChild(mk(fileUrlAt(i, "transcript"), "Transcription"));
+      if (f.artifacts && f.artifacts.transcript_srt)
+        links.appendChild(mk(fileUrlAt(i, "transcript_srt"), "Sous-titres"));
+      row.appendChild(links);
+    } else if (f.state === "error" && f.error) {
+      const err = document.createElement("span");
+      err.className = "ferr";
+      err.textContent = f.error;
+      row.appendChild(err);
+    }
+    list.appendChild(row);
+  }
+
+  if (job.zip) {
+    const a = document.createElement("a");
+    a.href = "/api/jobs/" + jobId + "/zip";
+    a.textContent = "Télécharger tout (ZIP)";
+    a.download = "";
+    a.className = "dl";
+    btns.appendChild(a);
+  }
+
+  $("note").textContent =
+    (fmt === "mp3"
+      ? "Chaque fichier audio est exporté en MP3 (192 kbit/s) ; "
+      : "Chaque fichier audio est exporté en WAV 48 kHz (non compressé) ; ")
+    + "bande passante étendue par LavaSR v2 (48 kHz mono). "
+    + "Pour les vidéos, la piste vidéo est conservée telle quelle et l'audio remplacé (MP4, AAC 192 kbit/s).";
+
+  $("results").scrollIntoView({ behavior: "smooth" });
+}
+
+go.addEventListener("click", async () => {
+  const isFolder = mode === "folder";
+  if (isFolder ? !currentFiles.length : !currentFile) return;
+  go.disabled = true;
+  $("errorBox").style.display = "none";
+  $("results").style.display = "none";
+  showProgress(isFolder ? `Envoi du dossier (${currentFiles.length} fichiers)…` : "Envoi du fichier…", 0.03);
+
+  const fd = new FormData();
+  fd.append("denoise", $("denoise").checked ? "true" : "false");
+  fd.append("transcribe", $("transcribe").checked ? "true" : "false");
+  fd.append("input_sr", $("inputSr").value);
+  const cutoff = $("cutoff").value.trim();
+  if (cutoff) fd.append("cutoff", cutoff);
+  if (isFolder) {
+    fd.append("output_format", $("outFormat").value);
+    for (const { file, rel } of currentFiles) fd.append("files", file, rel);
+  } else {
+    fd.append("file", currentFile);
+  }
+  const url = isFolder ? "/api/enhance_folder" : "/api/enhance";
+
+  try {
+    const r = await fetch(url, { method: "POST", body: fd });
+    if (!r.ok) {
+      let detail = "Erreur " + r.status;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const data = await r.json();
+    jobId = data.job_id;
+    $("progressActions").classList.remove("hidden");
+    $("cancelBtn").disabled = false;
+    $("cancelBtn").textContent = "Annuler le traitement";
+    if (data.queue_position > 0) {
+      showProgress(`En file d'attente — ${data.queue_position} traitement(s) avant celui-ci…`, 0);
+    }
+    pollTimer = setInterval(poll, 800);
+  } catch (e) {
+    showError(e.message);
+  }
+});
+
+$("cancelBtn").addEventListener("click", cancelJob);
+$("deleteBtn").addEventListener("click", deleteJob);
+
+$("again").addEventListener("click", () => {
+  currentFile = null;
+  currentFiles = [];
+  jobId = null;
+  go.disabled = true;
+  go.textContent = "Améliorer l'audio";
+  dropTitle.textContent = mode === "folder"
+    ? "Glissez un dossier ici (sous-dossiers inclus)"
+    : "Glissez un fichier audio ou vidéo ici";
+  dropHint.textContent = mode === "folder"
+    ? "ou cliquez pour parcourir — tous les fichiers audio/vidéo seront détectés récursivement"
+    : "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…";
+  fileInput.value = "";
+  folderInput.value = "";
+  for (const id of ["origPlayer", "enhPlayer", "videoPlayer"]) {
+    const el = $(id);
+    el.pause();
+    el.src = "";
+  }
+  $("playA").classList.remove("on");
+  $("playB").classList.remove("on");
+  $("transcriptBlock").style.display = "none";
+  $("transcriptText").textContent = "";
+  $("results").style.display = "none";
+  $("progressCard").style.display = "none";
+  $("progressActions").classList.add("hidden");
+  $("deleteBtn").disabled = false;
+  $("errorBox").style.display = "none";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+const TRANSCRIBE_DESC_OK =
+  "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)";
+const TRANSCRIBE_DESC_MISSING =
+  "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.";
+
+// Idempotent : ne touche jamais à `.checked` quand la transcription est
+// disponible, pour ne pas décocher ce que l'utilisateur vient de cocher ; quand
+// elle ne l'est pas, on décoche (sinon on enverrait transcribe=true).
+function setTranscribeEnabled(on) {
+  $("transcribe").disabled = !on;
+  if (!on) $("transcribe").checked = false;
+  $("transcribeRow").classList.toggle("off", !on);
+  $("transcribeDesc").textContent = on ? TRANSCRIBE_DESC_OK : TRANSCRIBE_DESC_MISSING;
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const s = await r.json();
+    const b = $("modelBadge");
+    b.className = "badge";
+    const t = s.transcriber || { status: "idle" };
+    //.available : false = nemo_toolkit[asr] absent (run.sh n'installe que les
+    // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
+    const asrMissing = t.available === false;
+    setTranscribeEnabled(!asrMissing);
+    let asr = "";
+    if (t.status === "ready") asr = " · Parakeet prêt";
+    else if (t.status === "loading") asr = " · Chargement Parakeet…";
+    else if (t.status === "error") asr = " · Parakeet en erreur";
+    else if (asrMissing) asr = " · Parakeet non installé (./run.sh --asr)";
+    if (s.status === "ready") {
+      b.classList.add("ready");
+      b.textContent = "LavaSR v2 prêt — " + (s.device === "cuda" ? "GPU (CUDA)" : "CPU") + asr;
+    } else if (s.status === "error") {
+      b.classList.add("error");
+      b.textContent = "Erreur modèle : " + (s.error || "").slice(0, 60);
+    } else {
+      b.classList.add("loading");
+      b.textContent = "Chargement du modèle…" + (s.status === "idle" ? "" : " (1er lancement : téléchargement)") + asr;
+    }
+  } catch (_) {}
+}
+refreshStatus();
+setInterval(refreshStatus, 2000);
+</script>
+</body>
+</html>
