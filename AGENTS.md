@@ -30,8 +30,14 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # 208 tests, ~6 s, no model loaded
+.venv/bin/python -m pytest            # 209 tests, ~6 s, no model loaded
 .venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
+
+# container (see the "Docker" section below)
+docker build -t pyclean-audio .                     # CPU image, multi-GB, a few minutes
+docker build --target test .                        # same env + ffmpeg, runs pytest, exits
+docker run --rm -p 127.0.0.1:8787:8787 pyclean-audio
+docker compose up -d --build                        # compose.yaml, same image
 ```
 
 No **model** is loaded by the tests: no LavaSR weights, no NeMo. What *is*
@@ -335,6 +341,51 @@ English.
 - To restart the server from a shell: `pkill -f "uvicorn app[.]main"` (the
   bracket notation avoids killing your own command line) then start it detached:
   `setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >> /tmp/server.log 2>&1 < /dev/null &)'`.
+
+## Docker
+
+`Dockerfile` (multi-stage `builder` → `test` / `final`), `docker-entrypoint.sh`,
+`.dockerignore`, `compose.yaml`, `requirements-base.txt`. It serves the same app
+on `0.0.0.0`; it never calls `run.sh` (that installs at start-up and hardcodes
+`--host 127.0.0.1`). Rules to keep if you touch it:
+
+- **`--host 0.0.0.0` and `--workers 1`, always.** Not an optimization: the queue
+  is one in-process `queue.Queue` with a single consumer, job state is a dict,
+  and both models are lock-guarded singletons — a second worker duplicates the
+  models in VRAM and loses the jobs. Never change the worker's count.
+- **The entrypoint must `exec` uvicorn.** The exec-form `CMD` cannot expand
+  `${PORT}`, so the script resolves it and then *replaces itself*; uvicorn is
+  then PID 1 and `docker stop`'s SIGTERM reaches it. Drop the `exec` and every
+  stop becomes a 10 s timeout + SIGKILL with a possibly orphaned ffmpeg. The
+  script must also not create its own process group (`start_new_session` /
+  `os.killpg` in `app/processor.py`).
+- **`torch` is installed first, from `$TORCH_INDEX_URL`.** LavaSR depends on
+  torch itself, so letting it resolve pulls the default CUDA wheel from PyPI and
+  silently replaces it. The default index is the **CPU** one: the image stays
+  small and works everywhere, since the device is decided at load by
+  `torch.cuda.is_available()`. GPU = `--build-arg TORCH_INDEX_URL=…/cu130` +
+  `--gpus all` (NVIDIA Container Toolkit), nothing else.
+- **`INSTALL_ASR` defaults to `false`**, like `run.sh --asr`: `nemo_toolkit[asr]`
+  is several GB (91 more packages) and pins its own dependency versions.
+  Measured on top of the CPU build: `torch`/`torchaudio` stay CPU, but
+  `huggingface-hub` is downgraded (2.0.0 → 1.33.0) and `fsspec`/`packaging`/
+  `setuptools` are replaced — re-check that after bumping anything, and never
+  paper over a conflict with `--no-deps`.
+- **No volume on `/app/data`.** `_purge_orphans()` wipes `data/jobs/` at every
+  start (jobs live in memory), so a volume there would look persistent and be
+  empty after each restart. The only volume is the HuggingFace cache
+  (`HF_HOME=/cache/huggingface`, mounted at `/cache`).
+- **Non-root (uid 1000) is required**, not decoration: `app/main.py:33-35`
+  creates `data/jobs` at *import* time and HF needs a writable cache.
+- **ffmpeg in the image** (Debian bookworm, not Alpine: glibc for torch,
+  `libmp3lame` for `libmp3lame0`, and `ffprobe` by bare name in `PATH`). Also
+  mandatory in the `test` stage, or `requires_ffmpeg` silently skips.
+- **Healthcheck is `GET /api/status`**, shell form so it reads the live `PORT` —
+  `HEAD` returns 404 on every route of this app.
+- **Published on `127.0.0.1`**: there is no authentication at all, so
+  `0.0.0.0:8787` would expose an open upload/processing service.
+- Nothing is pinned (base tag, deps, LavaSR ref) — consistent with the rest of
+  the project. The image is not bit-reproducible; don't invent a lock file.
 
 ## Quick tests
 

@@ -29,6 +29,7 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 ## Contents
 
 - [Quick start](#quick-start)
+- [Docker](#docker)
 - [Transcription (optional)](#transcription-optional)
 - [Output files and download names](#output-files-and-download-names)
 - [Command line](#command-line)
@@ -79,6 +80,88 @@ source using the two linked players.
 > `./run.sh --asr` adds it to the existing `.venv` without recreating it.
 > Until then, the “Transcribe the cleaned audio” checkbox is disabled and says why —
 > see [Transcription](#transcription-optional).
+
+## Docker
+
+The image runs exactly the same server as `./run.sh` — same models, same
+defaults, same page — with the dependencies already installed. Inside the
+container the server listens on `0.0.0.0`; on the host it is published on
+`127.0.0.1` only.
+
+```bash
+git clone <this-repo> pyclean-audio
+cd pyclean-audio
+docker compose up -d --build    # CPU, first build a few minutes (multi-GB)
+docker compose logs -f
+```
+
+Then open <http://127.0.0.1:8787>. The same thing without compose:
+
+```bash
+docker build -t pyclean-audio .
+docker volume create pyclean-hf          # model cache, survives the container
+                                         # (compose declares `pyclean-hf` too,
+                                         #  but materialises it as
+                                         #  `pyclean-audio_pyclean-hf`)
+docker run -d --name pyclean-audio \
+  -p 127.0.0.1:8787:8787 \
+  -v pyclean-hf:/cache \
+  pyclean-audio
+docker logs -f pyclean-audio
+```
+
+The image has a `HEALTHCHECK` on `GET /api/status`:
+
+```bash
+docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
+curl -sf http://127.0.0.1:8787/api/status                   # {"status":"ready","device":"cpu",…}
+```
+
+| Build | Command | Notes |
+| ----- | ------- | ----- |
+| CPU (default) | `docker compose up -d --build` | works on any host; image ≈ 2.5 GB (CPU torch + LavaSR) |
+| Transcription | `docker build --build-arg INSTALL_ASR=true -t pyclean-audio .` | adds `nemo_toolkit[asr]`: **+~90 packages, several GB**, several minutes. Measured resolution on top of the default CPU build: `torch`/`torchaudio` stay CPU, but `huggingface-hub` is downgraded (2.0.0 → 1.33.0) and `fsspec`/`packaging`/`setuptools` are replaced. The ~2.4 GB Parakeet checkpoint is then downloaded on first transcription. |
+| GPU (NVIDIA) | `docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 -t pyclean-audio .`<br>`docker run --gpus all -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache pyclean-audio` | CUDA wheels + the NVIDIA Container Toolkit on the host. Pick the `cu1xx` index that matches the driver. Nothing else is needed: the device is chosen at model load by `torch.cuda.is_available()`. |
+| Test suite | `docker build --target test .` | runs `pytest` **with ffmpeg**, then exits; no image needed. |
+
+Uncomment the `deploy.resources.reservations.devices` block in `compose.yaml`
+to get the same GPU setup from compose.
+
+> [!WARNING]
+> **There is no authentication anywhere in the app.** Keep the published port on
+> `127.0.0.1`. `0.0.0.0:8787` would expose an unauthenticated upload, processing
+> and download service to your whole network. To reach it from another machine,
+> put an authenticating reverse proxy in front of it.
+
+> [!NOTE]
+> **Results are ephemeral, like the bare app**: jobs live in memory and
+> `data/jobs/` is wiped at every start, so nothing is mounted on `/app/data` and
+> `docker compose down` / a restart discards every result. The only volume is the
+> HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the LavaSR weights
+> (~115 MB) are downloaded once into it, then reused across restarts and
+> recreations. Add the transcription build and the cache holds ~2.4 GB more.
+
+Other things worth knowing:
+
+- **The first run downloads the model anyway** (~115 MB, first job or the boot
+  preload), even with the volume mounted: the weights are deliberately not baked
+  into the image.
+- `PORT=9000 docker compose up -d` publishes and listens on 9000; the entrypoint
+  reads the same `PORT` as `run.sh`, and the healthcheck follows it. With plain
+  `docker run`, change **both** sides of the mapping
+  (`-e PORT=9000 -p 127.0.0.1:9000:9000`): a mismatch still reports `healthy`,
+  because the healthcheck runs inside the container and cannot see the publish.
+- The image runs as a **non-root user** (uid 1000) — required anyway, since
+  `app/main.py` creates its job directory at import time.
+- `ffmpeg`/`ffprobe` are in the image; the app calls them by bare name.
+- Nothing is pinned (base image tag, dependencies, LavaSR ref), exactly like
+  `run.sh`: the image is not bit-reproducible, and rebuilding later can bring a
+  newer `torch`. The CPU wheel index and the LavaSR git dependency may not both
+  have a wheel for every architecture (amd64 is the tested one).
+- `requirements-base.txt` is the base set copied from `run.sh`; the container
+  never calls `run.sh` (that installs at start-up and hardcodes
+  `--host 127.0.0.1`) — its venv is built at image build time, and the server
+  inside the container listens on `0.0.0.0`.
 
 ## Transcription (optional)
 
@@ -206,7 +289,8 @@ read once, at server start.
 
 | Variable | Default | Role |
 | -------- | ------- | ---- |
-| `PORT` | `8787` | listen port (used by `run.sh`) |
+| `PORT` | `8787` | listen port (used by `run.sh`, and by the container entrypoint — it also serves the healthcheck) |
+| `HF_HOME` | `~/.cache/huggingface` | HuggingFace cache (LavaSR, Parakeet). The Docker image sets it to `/cache/huggingface`, where the `pyclean-hf` volume is mounted |
 | `PYCLEAN_JOB_TTL` | `21600` | seconds before a finished job is purged (6 h) |
 | `PYCLEAN_JOB_MAX` | `200` | jobs kept in memory |
 | `PYCLEAN_QUEUE_MAX` | `20` | max waiting requests (beyond: 429) |
@@ -320,6 +404,20 @@ queue.
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
+The same suite runs inside the image, with `ffmpeg` present so the
+`requires_ffmpeg` tests are not silently skipped:
+
+```bash
+docker build --target test .        # installs requirements-dev.txt, runs pytest -rs, exits
+
+# smoke test of the running image
+docker build -t pyclean-audio .
+docker run --rm -d --name pyclean-audio -p 127.0.0.1:8787:8787 pyclean-audio
+curl -sf http://127.0.0.1:8787/api/status
+docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
+docker stop pyclean-audio
+```
+
 ```bash
 # test assets
 ffmpeg -f lavfi -i "sine=frequency=350:duration=6" -af "lowpass=2400,aresample=8000" test_8k.wav
@@ -349,6 +447,11 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | Path | Role |
 | ---- | ---- |
 | `run.sh` | launcher: creates `.venv`, installs dependencies, starts the server (`--asr` for transcription) |
+| `Dockerfile` | container image: `builder` (venv), opt-in `test` (runs the suite), `final` (ffmpeg, non-root) |
+| `docker-entrypoint.sh` | container entrypoint: resolves `$PORT`, then `exec`s uvicorn so it is PID 1 |
+| `compose.yaml` | local deployment: loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
+| `.dockerignore` | keeps the build context small (`tests/` stays: the `test` stage needs it) |
+| `requirements-base.txt` | the 4 base packages, copied from `run.sh:45-47` (no NeMo) |
 | `app/main.py` | FastAPI API: uploads, queue, cancellation, retention, downloads |
 | `app/processor.py` | ffmpeg pipeline: decode, extract, remux, MP3, job orchestration |
 | `app/enhancer.py` | `LavaEnhance2` wrapper, 16 kHz windowed reader, block planning |

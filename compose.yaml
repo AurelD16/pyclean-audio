@@ -1,0 +1,65 @@
+# pyclean-audio — local single-user deployment (CPU by default).
+#
+#   docker compose up -d --build    # then open http://127.0.0.1:8787
+#   docker compose logs -f
+#   docker compose down             # add -v to drop the model cache too
+#
+# Every setting below is read from the host environment with its default value,
+# so this file is the single place to configure the container:
+#
+#   PORT=9000 PYCLEAN_JOB_TTL=3600 docker compose up -d
+#
+# Two warnings, both deliberate:
+#   * The API has **no authentication**: the host side is bound to 127.0.0.1 so
+#     a LAN client cannot upload to (or download from) this instance. Publishing
+#     0.0.0.0 would expose an open file-processing service.
+#   * Results are ephemeral, exactly like the bare app: jobs live in memory and
+#     data/jobs/ is wiped at every start, so only the *model cache* is a volume.
+#     Do not mount anything on /app/data.
+
+services:
+  pyclean-audio:
+    build:
+      context: .
+      args:
+        # CPU wheels by default; for a NVIDIA host see the commented block below.
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+        # true adds nemo_toolkit[asr] (several GB, pins its own torch).
+        INSTALL_ASR: "${INSTALL_ASR:-false}"
+    image: pyclean-audio:local
+    ports:
+      - "127.0.0.1:${PORT:-8787}:${PORT:-8787}"
+    init: true
+    restart: unless-stopped
+    environment:
+      PORT: "${PORT:-8787}"
+      # app/config.py — every limit is optional, an unreadable or zero value
+      # falls back to the default (PYCLEAN_FFMPEG_TIMEOUT=0 means "no limit").
+      PYCLEAN_MAX_SIZE: "${PYCLEAN_MAX_SIZE:-2147483648}"
+      PYCLEAN_MAX_DURATION: "${PYCLEAN_MAX_DURATION:-10000}"
+      PYCLEAN_MAX_FILES: "${PYCLEAN_MAX_FILES:-500}"
+      PYCLEAN_MAX_FOLDER_TOTAL: "${PYCLEAN_MAX_FOLDER_TOTAL:-8589934592}"
+      PYCLEAN_FFMPEG_TIMEOUT: "${PYCLEAN_FFMPEG_TIMEOUT:-0}"
+      PYCLEAN_JOB_TTL: "${PYCLEAN_JOB_TTL:-21600}"
+      PYCLEAN_JOB_MAX: "${PYCLEAN_JOB_MAX:-200}"
+      PYCLEAN_PURGE_INTERVAL: "${PYCLEAN_PURGE_INTERVAL:-60}"
+      PYCLEAN_QUEUE_MAX: "${PYCLEAN_QUEUE_MAX:-20}"
+      PYCLEAN_PRELOAD_ASR: "${PYCLEAN_PRELOAD_ASR:-0}"
+    volumes:
+      # HuggingFace cache only (LavaSR ~115 MB, Parakeet ~2.4 GB with
+      # INSTALL_ASR=true). HF_HOME points there inside the image.
+      - pyclean-hf:/cache
+    # GPU (needs the NVIDIA Container Toolkit on the host, and an image built
+    # with the CUDA wheels: TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+    # or cu126/cu128 matching the host driver). The device itself is chosen at
+    # model load by torch.cuda.is_available() — nothing else to set.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  pyclean-hf:

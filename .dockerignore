@@ -1,0 +1,31 @@
+# Build context: keep it small. The runtime image copies only app/ and static/,
+# but the `test` stage needs tests/ + pytest.ini, and the builder needs
+# requirements-base.txt — so the context keeps the whole source tree.
+#
+# The repository has no .gitignore (see AGENTS.md), hence this file from scratch.
+.git
+.gitignore
+.venv
+venv
+data
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.egg-info
+.idea
+.vscode
+
+# local test assets and their outputs (AGENTS.md, "Quick tests")
+test.txt
+test_8k.wav
+*.mp3
+*.mp4
+*.wav
+out*/
+tdir/
+*.log
+*.nemo
