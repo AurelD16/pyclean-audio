@@ -121,3 +121,29 @@ def test_chaque_format_est_decrit_sans_mensonge(readme, root_readme):
     assert "AppImage" in root_readme
     assert "windows-x86_64.zip" in root_readme
     assert "Mark of the Web" in root_readme
+
+
+def test_aucune_entree_desktop_nannonce_pas_un_gestionnaire_de_fichiers():
+    """The launcher takes no positional argument: `Exec=… %F` or a `MimeType=`
+    would put a silent no-op in the file manager's "Open with" (argparse exits 2
+    behind `Terminal=false`, on a read-only mount, with nothing on screen).
+
+    Found in review, after the entries had shipped in three commits — so it is
+    pinned here.
+    """
+    for path in (MAKE_DEB, APPIMAGE_SH):
+        entry = path.read_text(encoding="utf-8")
+        desktop = entry[entry.index("[Desktop Entry]"):]
+        desktop = desktop[:desktop.index("\nDESKTOP") if "\nDESKTOP" in desktop else None]
+        assert "MimeType=" not in desktop, path.name
+        for line in desktop.splitlines():
+            if line.startswith("Exec="):
+                assert "%F" not in line and "%U" not in line, f"{path.name}: {line}"
+
+
+def test_le_lanceur_accepte_bien_aucun_fichier():
+    """The other half of the pin: if the launcher ever grows a positional
+    argument, these two assertions have to be revisited together."""
+    launcher = (PACKAGING / "launcher" / "launcher.py").read_text(encoding="utf-8")
+    assert '"--port"' in launcher
+    assert not re.search(r'add_argument\(\s*"[^-]', launcher), "positional argument added"

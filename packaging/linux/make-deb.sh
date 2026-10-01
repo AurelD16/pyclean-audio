@@ -115,6 +115,11 @@ exit 0
 POSTRM
 chmod 0755 "$STAGE/DEBIAN/postrm"
 
+# No %F, no MimeType: the launcher takes no positional argument, so declaring
+# the app a handler for audio/video would put a silent no-op in the file
+# manager's "Open with" (argparse would exit 2 behind Terminal=false, and an
+# AppImage is a read-only mount). Opening a file *into* the page is a feature,
+# deliberately not done here — see packaging/README.md.
 cat >"$STAGE/usr/share/applications/pyclean-audio.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
@@ -122,12 +127,11 @@ Version=1.0
 Name=pyclean-audio
 GenericName=Audio restoration
 Comment=Restore the audio of your recordings, locally
-Exec=pyclean-audio %F
+Exec=pyclean-audio
 TryExec=pyclean-audio
 Terminal=false
 Categories=AudioVideo;Audio;AudioVideoEditing;
 Keywords=audio;noise;restoration;denoise;mp3;wav;video;
-MimeType=audio/x-wav;audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/mp4;audio/x-m4a;video/mp4;video/x-matroska;video/webm;video/quicktime;
 Icon=audio-x-generic
 DESKTOP
 chmod 0644 "$STAGE/usr/share/applications/pyclean-audio.desktop"

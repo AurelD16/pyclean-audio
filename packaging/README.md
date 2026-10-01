@@ -240,6 +240,9 @@ To run on a clean VM (Windows and/or Debian/Ubuntu), a human does this once per
 release:
 
 1. install → double-click → the window opens on the working page, **no console**;
+1b. in the file manager, the app-menu (or Start-menu) entry starts it, and the
+   app is **not** offered in "Open with" for audio or video files — it takes no
+   file argument on purpose (see below);
 2. enhance a WAV → download the WAV and the MP3;
 3. enhance a video → download the MP4 (video stream untouched);
 4. cancel a job mid-run → `cancelled`, and no `ffmpeg` left in the task manager;
@@ -265,7 +268,8 @@ sudo dpkg -i dist/pyclean-audio_1.0.0_amd64.deb
 ```
 
 App-menu entry, `Terminal=false`, `/usr/bin/pyclean-audio` on the PATH,
-`Depends:` and description that follow `dist/WEBVIEW`. Verified here: the package
+`Depends:` and description that follow `dist/WEBVIEW`. The entry registers no
+file type and takes no `%F`: see the AppImage section below for why. Verified here: the package
 builds, `dpkg-deb --info/--contents` show the read-only `/opt` payload and both
 `Depends:` variants, and the shipped wrapper resolves through a relative and an
 absolute symlink. **Not verified:** `dpkg -i` itself (no root here) and a click
@@ -313,6 +317,15 @@ The script refuses to produce an iconless AppImage: the SVG is copied as such
 (appimagetool ≥ 1.9 embeds SVG), a rasteriser (`rsvg-convert`, ImageMagick) adds
 a PNG when present, and the built archive is checked for the icon.
 
+The `.desktop` entries (this one and the `.deb`'s) carry **no `%F` and no
+`MimeType=`**: the launcher takes no positional argument, so registering the app
+as a handler for audio/video would put a silent no-op in the file manager's
+"Open with" — argparse would exit 2 behind `Terminal=false`, on a read-only
+mount, with nothing on screen. **Opening a file straight into the page is a
+feature, deliberately not implemented** (it would mean passing the path to the
+server and loading it in the page); the supported flow is drag and drop, which is
+what the page is built for.
+
 ### `pyclean-audio-1.0.0-setup.exe` (Windows) — **NOT built here**
 
 ```bash
@@ -342,9 +355,10 @@ so the extracted folder needs no write access.
 and this tree is bigger, so it would fail (or leave a truncated archive) half
 way through. The script uses `System.IO.Compression.ZipFile::CreateFromDirectory`
 (ZIP64), then reopens the archive, checks that it contains
-`pyclean-audio/pyclean-audio.exe`, `pyclean-audio/runtime/python/python.exe`, the
-desktop entry and the icon, and reads its largest entry back end to end — a
-truncated archive is caught at build time, not by a user.
+`pyclean-audio/pyclean-audio.exe` and the interpreter, and **decompresses the
+largest entry to its end**, comparing the byte count with what the central
+directory says — a truncation anywhere inside it is caught at build time, not by
+a user.
 
 Like the `setup.exe`, this one has **never been executed here**: no Windows, no
 PowerShell. The Mark of the Web (see below) is its one known friction and it is

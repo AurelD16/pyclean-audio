@@ -113,6 +113,11 @@ else
   say "icon: the SVG alone (no rsvg-convert/convert here; appimagetool embeds SVG)"
 fi
 
+# No %F, no MimeType: the launcher takes no positional argument, so declaring
+# the app a handler for audio/video would put a silent no-op in the file
+# manager's "Open with" (argparse would exit 2 behind Terminal=false, and an
+# AppImage is a read-only mount). Opening a file *into* the page is a feature,
+# deliberately not done here — see packaging/README.md.
 cat >"$STAGE/pyclean-audio.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
@@ -120,30 +125,45 @@ Version=1.0
 Name=pyclean-audio
 GenericName=Audio restoration
 Comment=Restore the audio of your recordings, locally
-Exec=AppRun %F
+Exec=AppRun
 TryExec=AppRun
 Terminal=false
 Categories=AudioVideo;Audio;AudioVideoEditing;
 Keywords=audio;noise;restoration;denoise;mp3;wav;video;
-MimeType=audio/x-wav;audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/mp4;audio/x-m4a;video/mp4;video/x-matroska;video/webm;video/quicktime;
 Icon=pyclean-audio
 X-AppImage-Version=$VERSION
 DESKTOP
 
 # --- 3. pack it --------------------------------------------------------------
+# What the AppDir must contain, checked *before* packing: appimagetool takes a
+# few minutes over 1.5 GB, and there is no point squashing a tree that is going
+# to be refused anyway.
+for want in AppRun pyclean-audio.desktop pyclean-audio.svg \
+            pyclean-audio/pyclean-audio pyclean-audio/runtime/python; do
+  [ -e "$STAGE/$want" ] || die "the AppDir has no $want"
+done
+# appimagetool only warns about a missing or invalid desktop entry; refuse here
+# instead, where the message can name it.
+if command -v desktop-file-validate >/dev/null; then
+  desktop-file-validate "$STAGE/pyclean-audio.desktop" \
+    || die "the .desktop entry does not validate"
+  say "desktop entry: validated by desktop-file-validate"
+fi
+
 say "appimagetool"
 rm -f "$APPIMAGE"
 export ARCH="${ARCH:-x86_64}"
-# No .desktop validation dependency: the entry above is hand-written and stable.
+# --no-appstream: the repository ships no AppStream metainfo, and appimagetool
+# only warns about it. (The .desktop entry itself is checked just above.)
 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream "$STAGE" "$APPIMAGE" \
   || die "appimagetool failed"
 [ -f "$APPIMAGE" ] || die "appimagetool produced nothing"
 
-# An AppImage that does not mount is the one failure nobody notices until a user
-# tries it, so check what we can without FUSE: the type, its own runtime magic,
-# and that the launcher is inside.
 say "checks"
-file "$APPIMAGE" | grep -q "ELF" || die "the produced file is not an ELF AppImage: $APPIMAGE"
+# The ELF magic, rather than file(1): a minimal host has no file(1) and the
+# build would die on a *perfect* archive with a false accusation.
+[ "$(head -c 4 "$APPIMAGE")" = "$(printf '\177ELF')" ] \
+  || die "the produced file is not an ELF AppImage: $APPIMAGE"
 # The embedded runtime must answer, or the file is not runnable at all.
 "$APPIMAGE" --appimage-offset >/dev/null 2>&1 \
   || die "the AppImage runtime does not answer (--appimage-offset): $APPIMAGE"
@@ -151,12 +171,6 @@ file "$APPIMAGE" | grep -q "ELF" || die "the produced file is not an ELF AppImag
 # build leaves a ~15 MB file (the AppImage runtime alone).
 SIZE_KB="$(du -k "$APPIMAGE" | cut -f1)"
 [ "$SIZE_KB" -gt 102400 ] || die "the AppImage is only $SIZE_KB KB: the payload is missing"
-
-# What the AppDir must contain, checked before packing — deterministic and free.
-for want in AppRun pyclean-audio.desktop pyclean-audio.svg \
-            pyclean-audio/pyclean-audio pyclean-audio/runtime/python; do
-  [ -e "$STAGE/$want" ] || die "the AppDir has no $want"
-done
 
 # And what ended up inside: the squashfs starts at an offset, and a zstd payload
 # is unreadable by an old unsquashfs, so both are handled explicitly.

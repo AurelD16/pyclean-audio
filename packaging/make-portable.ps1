@@ -68,7 +68,9 @@ Write-Host "  $OutputName — $SizeMb MB"
 
 # The archive has to be readable and complete: a 1.4-2.6 GB payload that failed
 # half way through would otherwise be discovered by a user. Read the central
-# directory back and look for the two paths that make the tree runnable.
+# directory back, then decompress the largest entry **to its end** and compare
+# the byte count with the directory's — a truncation anywhere inside that entry
+# (a ZIP64 writer that gave up half way, a full disk) shows up here.
 Say "checking the archive"
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try {
@@ -85,8 +87,6 @@ foreach ($want in @("pyclean-audio/pyclean-audio.exe", "pyclean-audio/runtime/py
 if (-not $names.Keys.Where({ $_ -like "pyclean-audio/runtime/python/*" }).Count) {
     Die "the archive has no runtime\python content"
 }
-# Spot-check one big file end to end: opening its stream and reading it is what
-# would fail on a truncated entry.
 $big = $names.Keys | Where-Object { $_ -like "pyclean-audio/runtime/python/*" } |
     Sort-Object { $names[$_] } -Descending | Select-Object -First 1
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
@@ -94,14 +94,17 @@ try {
     $entry = $archive.GetEntry($big)
     $stream = $entry.Open()
     try {
-        $buffer = New-Object byte[] 1048576
-        $read = $stream.Read($buffer, 0, $buffer.Length)
+        $buffer = New-Object byte[] 4194304
+        $total = 0
+        while (($total += $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { }
     }
     finally { $stream.Dispose() }
 }
 finally { $archive.Dispose() }
-if ($read -lt 1) { Die "could not read $big out of the archive" }
-Write-Host "  ok: $big ($([math]::Round($names[$big] / 1MB, 1)) MB) reads back"
+if ($total -ne $names[$big]) {
+    Die "$big is truncated in the archive: read $total bytes, the directory says $($names[$big])"
+}
+Write-Host "  ok: $big ($([math]::Round($names[$big] / 1MB, 1)) MB) decompresses completely"
 
 Say "done — dist\$OutputName ($SizeMb MB)"
 Write-Host "use:    extract it anywhere, then double-click pyclean-audio\pyclean-audio.exe"
