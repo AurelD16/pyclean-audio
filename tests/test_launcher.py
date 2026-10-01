@@ -181,7 +181,18 @@ def test_main_signale_un_etat_inutilisable(monkeypatch, tmp_path, capsys):
 
 
 def test_pick_port_renvoie_le_port_prefere():
-    assert launcher.pick_port(8787) == 8787
+    """The preferred port itself when it is free.
+
+    Not 8787 literally: this fails whenever a pyclean-audio is running on the
+    developer's machine, which is exactly what happened while the AppImage was
+    being tested.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+    assert launcher.pick_port(free) == free
 
 
 def test_pick_port_contourne_un_port_occupe(tmp_path):

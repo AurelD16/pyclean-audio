@@ -31,14 +31,20 @@ matrix workflow would be the natural next step — the repository has no CI toda
 
 ## What is shipped
 
-| Artifact | Built by | Needs at install time |
-| -------- | -------- | --------------------- |
-| `dist/pyclean-audio_1.0.0_amd64.deb` | `build_runtime.sh` + `linux/make-deb.sh` (Linux) | `dpkg -i` (root, once) |
-| `dist/pyclean-audio-1.0.0-linux-x86_64.tar.gz` | `build_runtime.sh` + `linux/make-portable.sh` | nothing (extract, run) |
-| `dist/pyclean-audio-1.0.0-setup.exe` | `build_runtime.ps1` + `installer/pyclean-audio.iss` (Windows) | nothing (double-click) |
+| Artifact | Built by | Needs at install time | Real size |
+| -------- | -------- | --------------------- | --------- |
+| `dist/pyclean-audio_1.0.0_amd64.deb` | `build_runtime.sh` + `linux/make-deb.sh` (Linux) | `dpkg -i` (root, once) | 272 MB |
+| `dist/pyclean-audio-1.0.0-linux-x86_64.tar.gz` | `build_runtime.sh` + `linux/make-portable.sh` | nothing (extract, run) | 572 MB |
+| `dist/pyclean-audio-1.0.0-x86_64.AppImage` | `build_runtime.sh` + `linux/make-appimage.sh` | nothing (chmod +x, run) | 375 MB |
+| `dist/pyclean-audio-1.0.0-setup.exe` | `build_runtime.ps1` + `installer/pyclean-audio.iss` (Windows) | nothing (double-click) | not measured (see below) |
+| `dist/pyclean-audio-1.0.0-windows-x86_64.zip` | `build_runtime.ps1` + `make-portable.ps1` | nothing (extract, run) | not measured (see below) |
 
-Every artifact is ~2.6 GB: CPU torch alone is ~2.5 GB of files. **The download,
-not the installation, is the long pole.**
+The uncompressed tree is ~1.5 GB: CPU torch alone is ~1.2 GB of it. **The
+download, not the installation, is the long pole.** The three sizes above are
+real measurements from this workspace; the two Windows artifacts have never been
+built here (no Windows, no PowerShell), so their size is not measured — see
+[each artifact](#each-artifact-what-it-is-and-what-is-verified) for exactly what
+has and has not been executed.
 
 ## Layout of an install
 
@@ -90,15 +96,18 @@ left by a crash is reclaimed.
 ## Build chain
 
 ```bash
-# Linux — runtime (~10 min, ~2.6 GB)
+# Linux — runtime (~8 min, ~1.5 GB)
 packaging/build_runtime.sh                 # -> dist/pyclean-audio/ + dist/BUILD-INFO.txt
 packaging/linux/make-deb.sh                # -> dist/pyclean-audio_1.0.0_amd64.deb
 packaging/linux/make-portable.sh           # -> dist/pyclean-audio-1.0.0-linux-x86_64.tar.gz
+packaging/linux/make-appimage.sh           # -> dist/pyclean-audio-1.0.0-x86_64.AppImage
 
-# Windows — runtime, then the installer
+# Windows — runtime, then the installer and/or the portable ZIP
 powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=1.0.0 ^
     packaging\installer\pyclean-audio.iss   # -> dist\pyclean-audio-1.0.0-setup.exe
+powershell -ExecutionPolicy Bypass -File packaging\make-portable.ps1
+                                                # -> dist\pyclean-audio-1.0.0-windows-x86_64.zip
 ```
 
 Prerequisites: [`uv`](https://docs.astral.sh/uv/) and **git** (LavaSR is a
@@ -180,6 +189,9 @@ not as observed.)
 | `FFMPEG_SHA256` / `-FfmpegSha256` | the digest of that exact file | the build **stops** if the download does not match |
 | `FFMPEG_FROM_SYSTEM` | `0` (Linux) | `1` reuses the host's `ffmpeg`/`ffprobe` instead of downloading |
 | `WITH_WEBVIEW` | `1` (Windows), `0` (Linux) | bundle `pywebview` for the embedded window |
+| `APPIMAGETOOL` | appimagetool 1.9.1 (pinned URL) | a local path to a tool you trust instead of the download |
+| `APPIMAGETOOL_SHA256` | the digest of that exact file | the AppImage build **stops** if the download does not match |
+| `ARCH` | `x86_64` | passed to appimagetool, which cannot always guess it |
 
 ffmpeg is **pinned by version and digest**, so the binary every user ends up
 with is the one a builder reviewed (the rolling `ffmpeg-release-*` files upstream
@@ -191,7 +203,9 @@ are a new build under the same name):
 | Windows | `gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip` | `db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec` |
 
 Point `FFMPEG_URL` somewhere else and the build stops on the digest unless you
-also pass the matching `FFMPEG_SHA256`. Both builds are checked after unpacking:
+also pass the matching `FFMPEG_SHA256`. appimagetool is pinned the same way
+(`APPIMAGETOOL` / `APPIMAGETOOL_SHA256`): a tool nobody verified must not end up
+inside a deliverable. Both builds are checked after unpacking:
 `ffmpeg -version` and `ffprobe -version` must run, and the Linux one ships
 `libmp3lame` (what `app/processor.py` encodes with).
 
@@ -238,6 +252,116 @@ release:
 7. launch it a second time → its address opens again, no second server;
 8. uninstall → the program files are gone, the results and the model cache are kept.
 
+## Each artifact: what it is, and what is verified
+
+Five formats, one tree. The honest state of each — including the two that have
+never been executed anywhere:
+
+### `pyclean-audio_1.0.0_amd64.deb` (Debian, Ubuntu) — **built and inspected**
+
+```bash
+packaging/build_runtime.sh && packaging/linux/make-deb.sh
+sudo dpkg -i dist/pyclean-audio_1.0.0_amd64.deb
+```
+
+App-menu entry, `Terminal=false`, `/usr/bin/pyclean-audio` on the PATH,
+`Depends:` and description that follow `dist/WEBVIEW`. Verified here: the package
+builds, `dpkg-deb --info/--contents` show the read-only `/opt` payload and both
+`Depends:` variants, and the shipped wrapper resolves through a relative and an
+absolute symlink. **Not verified:** `dpkg -i` itself (no root here) and a click
+in the software centre.
+
+### `pyclean-audio-1.0.0-linux-x86_64.tar.gz` — **built, extracted and run**
+
+```bash
+packaging/build_runtime.sh && packaging/linux/make-portable.sh
+tar -xzf dist/pyclean-audio-1.0.0-linux-x86_64.tar.gz && ./pyclean-audio/pyclean-audio
+```
+
+Verified here: the extracted tree starts, `/api/status` answers with the model
+ready, the page returns 200, and `SIGTERM` leaves no process and no
+`instance.lock`. Nothing is installed; the folder can be read-only.
+
+### `pyclean-audio-1.0.0-x86_64.AppImage` — **built, mounted, run and stopped**
+
+```bash
+packaging/build_runtime.sh && packaging/linux/make-appimage.sh
+chmod +x dist/pyclean-audio-1.0.0-x86_64.AppImage && ./pyclean-audio-1.0.0-x86_64.AppImage
+```
+
+One file, no installation: the runtime tree plus an `AppRun`, a `.desktop` entry
+and the icon (`packaging/linux/pyclean-audio.svg`), packed by **appimagetool
+1.9.1**, itself downloaded and **pinned by sha256** like ffmpeg
+(`APPIMAGETOOL=` / `APPIMAGETOOL_SHA256=` to override). appimagetool refuses to
+run as root, so the script refuses too, with that reason.
+
+Verified here, on the real artifact:
+
+- launched: FUSE mounts it read-only under `/tmp/.mount_pyclea…`, the server
+  starts from inside the mount, `/api/status` answers `desktop: true` with the
+  model ready, the page returns 200, and **nothing is written into the image**
+  (state goes to `$XDG_DATA_HOME/pyclean-audio`);
+- stopped: `POST /api/shutdown` (the page's Quit) answers 200, the server and
+  the launcher are gone, the mount is released, `instance.lock` is removed;
+- `APPIMAGE_EXTRACT_AND_RUN=1` works too — it extracts to
+  `$TMPDIR/appimage_extracted_<hash>` and runs the same tree, which is the path
+  for a distribution without `libfuse2` (`--appimage-extract-and-run` does the
+  same on the command line). Note that it leaves that directory on disk; the
+  system temporary directory is the right place for it.
+
+The script refuses to produce an iconless AppImage: the SVG is copied as such
+(appimagetool ≥ 1.9 embeds SVG), a rasteriser (`rsvg-convert`, ImageMagick) adds
+a PNG when present, and the built archive is checked for the icon.
+
+### `pyclean-audio-1.0.0-setup.exe` (Windows) — **NOT built here**
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build_runtime.ps1
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=1.0.0 packaging\installer\pyclean-audio.iss
+```
+
+The recommended Windows format: per-user, no elevation, a Start-menu shortcut, a
+real uninstaller. Read statically (the script is in this repository) and never
+compiled or run: no Windows machine, no Inno Setup, no PowerShell in any sandbox
+we have. Treat every claim about it — size, `/VERYSILENT`, the uninstaller, the
+embedded window — as **unverified** until a human runs the checklist below on a
+clean Windows VM.
+
+### `pyclean-audio-1.0.0-windows-x86_64.zip` (Windows) — **NOT built here**
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\make-portable.ps1
+```
+
+For "I just want to run it": extract anywhere (a USB stick, a read-only folder)
+and double-click `pyclean-audio\pyclean-audio.exe`. No registry, no shortcut, no
+elevation — the application writes everything to `%LOCALAPPDATA%\pyclean-audio`,
+so the extracted folder needs no write access.
+
+`Compress-Archive` is deliberately **not** used: it refuses anything above 2 GB
+and this tree is bigger, so it would fail (or leave a truncated archive) half
+way through. The script uses `System.IO.Compression.ZipFile::CreateFromDirectory`
+(ZIP64), then reopens the archive, checks that it contains
+`pyclean-audio/pyclean-audio.exe`, `pyclean-audio/runtime/python/python.exe`, the
+desktop entry and the icon, and reads its largest entry back end to end — a
+truncated archive is caught at build time, not by a user.
+
+Like the `setup.exe`, this one has **never been executed here**: no Windows, no
+PowerShell. The Mark of the Web (see below) is its one known friction and it is
+unverified too.
+
+### The Mark of the Web, for both Windows formats
+
+A file extracted from a downloaded ZIP keeps the *Mark of the Web*, so SmartScreen
+may block the `.exe` the first time — the friction this issue exists to remove, so
+it is written down rather than glossed over:
+
+> right-click `pyclean-audio.exe` → **Properties** → tick **Unblock** at the
+> bottom → **Apply** → run it.
+
+The `setup.exe` installer has the same one-time warning ("more info → run
+anyway"), and it is **unsigned** in v1.
+
 ## Why not PyInstaller
 
 torch is ~2.5 GB of thousands of files and shared libraries, and a frozen torch
@@ -270,4 +394,7 @@ release.
   pins its own torch). The checkbox is disabled and the API answers 400 to
   `transcribe=true` — a supported state, not a bug.
 - **CUDA / NVIDIA acceleration**: CPU only (see above).
-- **AppImage**, **code signing / notarisation**, **CI matrix**.
+- **Code signing / notarisation** for the Windows artifacts, and a **CI matrix** —
+  each artifact is still built by hand, on its own OS. (The AppImage and the
+  portable ZIP were added later, at the user's request; the `libfuse2` caveat
+  that kept the AppImage out of v1 is handled by `--appimage-extract-and-run`.)

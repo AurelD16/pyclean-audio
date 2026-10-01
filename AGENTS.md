@@ -275,9 +275,18 @@ build commands: `packaging/README.md`.
 packaging/build_runtime.sh              # Linux  -> dist/pyclean-audio/
 packaging/linux/make-deb.sh             #         -> dist/*.deb
 packaging/linux/make-portable.sh        #         -> dist/*.tar.gz
+packaging/linux/make-appimage.sh        #         -> dist/*.AppImage (appimagetool,
+                                        #            pinned + digested like ffmpeg)
 powershell -File packaging\build_runtime.ps1   # Windows -> dist/pyclean-audio/
 ISCC.exe packaging\installer\pyclean-audio.iss #        -> dist/*-setup.exe
+powershell -File packaging\make-portable.ps1    #        -> dist/*-windows-x86_64.zip
 ```
+
+Every format is the **same tree**: a launcher, `runtime/python`, `runtime/bin`,
+`app/`, `static/`. The AppImage adds an `AppRun` that delegates to the tree's own
+`pyclean-audio` wrapper (never a second copy of its symlink loop), a `.desktop`
+entry and `packaging/linux/pyclean-audio.svg` — the only icon in the repository;
+there is no logo, so keep it sober.
 
 What must not be broken there:
 

@@ -89,10 +89,22 @@ install, no terminal, no configuration step. Double-click `pyclean-audio.exe`
 
 | | Windows | Linux (Debian, Ubuntu) | Linux (other distributions) |
 | --- | --- | --- | --- |
-| Get it | `pyclean-audio-<version>-setup.exe` | `pyclean-audio_<version>_amd64.deb` | `pyclean-audio-<version>-linux-x86_64.tar.gz` |
-| Install | double-click, no administrator rights | `sudo dpkg -i …deb` | extract the archive |
-| Start | Start-menu shortcut | app menu, or `pyclean-audio` | `./pyclean-audio/pyclean-audio` |
+| Get it | `pyclean-audio-<version>-setup.exe` | `pyclean-audio_<version>_amd64.deb` | `pyclean-audio-<version>-x86_64.AppImage`, or `-linux-x86_64.tar.gz` |
+| Install | double-click, no administrator rights | `sudo dpkg -i …deb` | nothing: run the AppImage (`chmod +x` once), or extract the archive |
+| Start | Start-menu shortcut | app menu, or `pyclean-audio` | double-click the AppImage, or `./pyclean-audio/pyclean-audio` |
 | Page opens | in the app's own window | in your default browser | in your default browser |
+
+Two more formats exist for the cases above: a **portable ZIP** for Windows
+(`pyclean-audio-<version>-windows-x86_64.zip` — extract it anywhere, including a
+USB stick, and double-click `pyclean-audio\pyclean-audio.exe`: no installer, no
+shortcut, no administrator rights) and the **AppImage** for Linux, which is one
+file and installs nothing at all. On a distribution without `libfuse2`, run the
+AppImage with `--appimage-extract-and-run` (it unpacks itself and runs).
+
+Files coming out of a **downloaded ZIP keep the Mark of the Web**, so Windows may
+block the `.exe` the first time: right-click it → **Properties** → tick
+**Unblock** at the bottom → **Apply**, then run it. The installer has the same
+one-time SmartScreen warning, and both Windows formats are unsigned in v1.
 
 The **Windows** build is built with an embedded window (`-WithWebView`, the
 default): the page opens in the application's own window, and closing it quits.
