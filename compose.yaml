@@ -1,13 +1,17 @@
-# pyclean-audio — local single-user deployment (CPU by default).
+# pyclean-audio — published images, CPU or GPU. Two services, one file.
 #
-#   docker compose up -d --build    # then open http://127.0.0.1:8787
+#   docker compose up -d cpu     # any machine, no GPU needed
+#   docker compose up -d gpu     # NVIDIA GPU + NVIDIA Container Toolkit
 #   docker compose logs -f
-#   docker compose down             # add -v to drop the model cache too
+#   docker compose down          # add -v to also drop the model cache
 #
-# Every setting below is read from the host environment with its default value,
-# so this file is the single place to configure the container:
+# Both images are the full app: enhancement **and** transcription (Parakeet via
+# NeMo). They are pulled from ghcr.io, so there is nothing to build here; to
+# build them yourself, see the "Docker" section of README.md
+# (docker build --target cpu|gpu).
 #
-#   PORT=9000 PYCLEAN_JOB_TTL=3600 docker compose up -d
+# **One service at a time**: they share the same host port. `cpu` and `gpu`
+# cannot run at the same time unless you change the port of one of them.
 #
 # Two warnings, both deliberate:
 #   * The API has **no authentication**: the host side is bound to 127.0.0.1 so
@@ -16,50 +20,65 @@
 #   * Results are ephemeral, exactly like the bare app: jobs live in memory and
 #     data/jobs/ is wiped at every start, so only the *model cache* is a volume.
 #     Do not mount anything on /app/data.
+#
+# Every setting below is read from the host environment with its default value,
+# so this file is the single place to configure the container:
+#
+#   PORT=9000 PYCLEAN_JOB_TTL=3600 docker compose up -d cpu
+
+# One anchor for the two services: the environment is identical by construction,
+# so the CPU service and the GPU service cannot drift apart (two copies of the
+# same block are two chances to disagree — the same rule the Dockerfile follows).
+x-env: &env
+  PORT: "${PORT:-8787}"
+  # app/config.py — every limit is optional, an unreadable or zero value falls
+  # back to the default (PYCLEAN_FFMPEG_TIMEOUT=0 means "no limit").
+  PYCLEAN_MAX_SIZE: "${PYCLEAN_MAX_SIZE:-2147483648}"
+  PYCLEAN_MAX_DURATION: "${PYCLEAN_MAX_DURATION:-10000}"
+  PYCLEAN_MAX_FILES: "${PYCLEAN_MAX_FILES:-500}"
+  PYCLEAN_MAX_FOLDER_TOTAL: "${PYCLEAN_MAX_FOLDER_TOTAL:-8589934592}"
+  PYCLEAN_FFMPEG_TIMEOUT: "${PYCLEAN_FFMPEG_TIMEOUT:-0}"
+  PYCLEAN_JOB_TTL: "${PYCLEAN_JOB_TTL:-21600}"
+  PYCLEAN_JOB_MAX: "${PYCLEAN_JOB_MAX:-200}"
+  PYCLEAN_PURGE_INTERVAL: "${PYCLEAN_PURGE_INTERVAL:-60}"
+  PYCLEAN_QUEUE_MAX: "${PYCLEAN_QUEUE_MAX:-20}"
+  # Transcription is *available* in both images, not *preloaded*: the Parakeet
+  # checkpoint is 2.4 GB and arrives on the first job that asks for a
+  # transcript. Set 1 to fetch it at boot instead.
+  PYCLEAN_PRELOAD_ASR: "${PYCLEAN_PRELOAD_ASR:-0}"
 
 services:
-  pyclean-audio:
-    build:
-      context: .
-      args:
-        # CPU wheels by default; for a NVIDIA host see the commented block below.
-        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
-        # true adds nemo_toolkit[asr] (several GB, pins its own torch).
-        INSTALL_ASR: "${INSTALL_ASR:-false}"
-    image: pyclean-audio:local
+  cpu:
+    image: ghcr.io/aureld16/pyclean-audio:cpu
     ports:
       - "127.0.0.1:${PORT:-8787}:${PORT:-8787}"
     init: true
     restart: unless-stopped
-    environment:
-      PORT: "${PORT:-8787}"
-      # app/config.py — every limit is optional, an unreadable or zero value
-      # falls back to the default (PYCLEAN_FFMPEG_TIMEOUT=0 means "no limit").
-      PYCLEAN_MAX_SIZE: "${PYCLEAN_MAX_SIZE:-2147483648}"
-      PYCLEAN_MAX_DURATION: "${PYCLEAN_MAX_DURATION:-10000}"
-      PYCLEAN_MAX_FILES: "${PYCLEAN_MAX_FILES:-500}"
-      PYCLEAN_MAX_FOLDER_TOTAL: "${PYCLEAN_MAX_FOLDER_TOTAL:-8589934592}"
-      PYCLEAN_FFMPEG_TIMEOUT: "${PYCLEAN_FFMPEG_TIMEOUT:-0}"
-      PYCLEAN_JOB_TTL: "${PYCLEAN_JOB_TTL:-21600}"
-      PYCLEAN_JOB_MAX: "${PYCLEAN_JOB_MAX:-200}"
-      PYCLEAN_PURGE_INTERVAL: "${PYCLEAN_PURGE_INTERVAL:-60}"
-      PYCLEAN_QUEUE_MAX: "${PYCLEAN_QUEUE_MAX:-20}"
-      PYCLEAN_PRELOAD_ASR: "${PYCLEAN_PRELOAD_ASR:-0}"
+    environment: *env
     volumes:
-      # HuggingFace cache only (LavaSR ~115 MB, Parakeet ~2.4 GB with
-      # INSTALL_ASR=true). HF_HOME points there inside the image.
+      # HuggingFace cache only (LavaSR ~115 MB, Parakeet ~2.4 GB). HF_HOME
+      # points there inside the image.
       - pyclean-hf:/cache
-    # GPU (needs the NVIDIA Container Toolkit on the host, and an image built
-    # with the CUDA wheels: TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
-    # or cu126/cu128 matching the host driver). The device itself is chosen at
-    # model load by torch.cuda.is_available() — nothing else to set.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+
+  gpu:
+    image: ghcr.io/aureld16/pyclean-audio:gpu
+    ports:
+      - "127.0.0.1:${PORT:-8787}:${PORT:-8787}"
+    # Needs the NVIDIA Container Toolkit on the host (and the container runtime
+    # started with it). Nothing else: the image carries CUDA torch, and the app
+    # picks the device at model load with torch.cuda.is_available().
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    init: true
+    restart: unless-stopped
+    environment: *env
+    volumes:
+      - pyclean-hf:/cache
 
 volumes:
   pyclean-hf:

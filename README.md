@@ -83,49 +83,57 @@ source using the two linked players.
 
 ## Docker
 
-The image runs exactly the same server as `./run.sh` — same models, same
-defaults, same page — with the dependencies already installed. Inside the
-container the server listens on `0.0.0.0`; on the host it is published on
-`127.0.0.1` only.
+Two images, **both with transcription**, same server as `./run.sh` — same page,
+same defaults, dependencies already installed. Inside the container
+the server listens on `0.0.0.0`; on the host it is published on `127.0.0.1`
+only.
+
+| Image | Size | Use |
+| ----- | ---- | --- |
+| `ghcr.io/aureld16/pyclean-audio:cpu` | ~0.7 GB (3.2 GB unpacked) | any machine, no GPU — **the default** |
+| `ghcr.io/aureld16/pyclean-audio:gpu` | ~3.5 GB (10.7 GB unpacked) | NVIDIA GPU + NVIDIA Container Toolkit |
 
 ```bash
-git clone <this-repo> pyclean-audio
-cd pyclean-audio
-docker compose up -d --build    # CPU, first build a few minutes (multi-GB)
+docker compose up -d cpu     # http://127.0.0.1:8787
+docker compose up -d gpu     # same port, so only one of the two at a time
 docker compose logs -f
+docker compose down          # add -v to drop the model cache too
 ```
 
-Then open <http://127.0.0.1:8787>. The same thing without compose:
+Without compose — `docker compose` only pulls, this is the same thing:
 
 ```bash
-docker build -t pyclean-audio .
-docker volume create pyclean-hf          # model cache, survives the container
-                                         # (compose declares `pyclean-hf` too,
-                                         #  but materialises it as
-                                         #  `pyclean-audio_pyclean-hf`)
 docker run -d --name pyclean-audio \
   -p 127.0.0.1:8787:8787 \
   -v pyclean-hf:/cache \
-  pyclean-audio
-docker logs -f pyclean-audio
+  ghcr.io/aureld16/pyclean-audio:cpu
+
+# the GPU variant is the same command plus --gpus all (NVIDIA Container Toolkit
+# on the host) and the :gpu tag
+docker run -d --name pyclean-audio --gpus all \
+  -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache \
+  ghcr.io/aureld16/pyclean-audio:gpu
 ```
 
 The image has a `HEALTHCHECK` on `GET /api/status`:
 
 ```bash
+curl -sf http://127.0.0.1:8787/api/status   # {"status":"ready","device":"cpu",…}
 docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
-curl -sf http://127.0.0.1:8787/api/status                   # {"status":"ready","device":"cpu",…}
 ```
 
-| Build | Command | Notes |
-| ----- | ------- | ----- |
-| CPU (default) | `docker compose up -d --build` | works on any host; image ≈ 2.5 GB (CPU torch + LavaSR) |
-| Transcription | `docker build --build-arg INSTALL_ASR=true -t pyclean-audio .` | adds `nemo_toolkit[asr]`: **+~90 packages, several GB**, several minutes. Measured resolution on top of the default CPU build: `torch`/`torchaudio` stay CPU, but `huggingface-hub` is downgraded (2.0.0 → 1.33.0) and `fsspec`/`packaging`/`setuptools` are replaced. The ~2.4 GB Parakeet checkpoint is then downloaded on first transcription. |
-| GPU (NVIDIA) | `docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 -t pyclean-audio .`<br>`docker run --gpus all -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache pyclean-audio` | CUDA wheels + the NVIDIA Container Toolkit on the host. Pick the `cu1xx` index that matches the driver. Nothing else is needed: the device is chosen at model load by `torch.cuda.is_available()`. |
-| Test suite | `docker build --target test .` | runs `pytest` **with ffmpeg**, then exits; no image needed. |
+Building them yourself (only needed to change something):
 
-Uncomment the `deploy.resources.reservations.devices` block in `compose.yaml`
-to get the same GPU setup from compose.
+```bash
+docker build --target cpu -t pyclean-audio:cpu .   # `docker build .` is the same
+docker build --target gpu -t pyclean-audio:gpu .   # CUDA 13.0 wheels
+docker build --target test .                       # runs pytest -rs, then exits
+```
+
+The GPU variant is built against **CUDA 13.0** (`cu130`), so it needs an NVIDIA
+driver that supports it. On an older driver, rebuild with the index that matches
+it — `--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126` and so
+on; `nvidia-smi` reports the driver version.
 
 > [!WARNING]
 > **There is no authentication anywhere in the app.** Keep the published port on
@@ -136,32 +144,79 @@ to get the same GPU setup from compose.
 > [!NOTE]
 > **Results are ephemeral, like the bare app**: jobs live in memory and
 > `data/jobs/` is wiped at every start, so nothing is mounted on `/app/data` and
-> `docker compose down` / a restart discards every result. The only volume is the
-> HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the LavaSR weights
-> (~115 MB) are downloaded once into it, then reused across restarts and
-> recreations. Add the transcription build and the cache holds ~2.4 GB more.
+> `docker compose down` / a restart discards every result. The only volume worth
+> having is the HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the
+> LavaSR weights (**~115 MB**) and, on the first transcription, the Parakeet
+> checkpoint (**~2.4 GB**) are downloaded once into it and reused across restarts
+> and recreations.
 
 Other things worth knowing:
 
-- **The first run downloads the model anyway** (~115 MB, first job or the boot
-  preload), even with the volume mounted: the weights are deliberately not baked
-  into the image.
-- `PORT=9000 docker compose up -d` publishes and listens on 9000; the entrypoint
-  reads the same `PORT` as `run.sh`, and the healthcheck follows it. With plain
-  `docker run`, change **both** sides of the mapping
+- **Transcription is available in both images** — the “Transcribe the cleaned
+  audio” checkbox works out of the box, no flag to pass. The 2.4 GB checkpoint is
+  fetched on the first job that asks for a transcript (or at boot with
+  `PYCLEAN_PRELOAD_ASR=1`), not at image build time.
+- NeMo pulls `transformers`, which constrains `huggingface-hub`: the images ship
+  **`huggingface-hub` 1.33.0** (against 2.x without transcription). LavaSR and
+  NeMo 3.0 are verified to work together there — an enhancement + transcription
+  job has been run end to end on the CPU image.
+- `PORT=9000 docker compose up -d cpu` publishes and listens on 9000; the
+  entrypoint reads the same `PORT` as `run.sh`, and the healthcheck follows it.
+  With plain `docker run`, change **both** sides of the mapping
   (`-e PORT=9000 -p 127.0.0.1:9000:9000`): a mismatch still reports `healthy`,
   because the healthcheck runs inside the container and cannot see the publish.
 - The image runs as a **non-root user** (uid 1000) — required anyway, since
   `app/main.py` creates its job directory at import time.
 - `ffmpeg`/`ffprobe` are in the image; the app calls them by bare name.
 - Nothing is pinned (base image tag, dependencies, LavaSR ref), exactly like
-  `run.sh`: the image is not bit-reproducible, and rebuilding later can bring a
-  newer `torch`. The CPU wheel index and the LavaSR git dependency may not both
-  have a wheel for every architecture (amd64 is the tested one).
+  `run.sh`: the images are not bit-reproducible, and rebuilding later can bring a
+  newer `torch`. `linux/amd64` only.
 - `requirements-base.txt` is the base set copied from `run.sh`; the container
   never calls `run.sh` (that installs at start-up and hardcodes
   `--host 127.0.0.1`) — its venv is built at image build time, and the server
   inside the container listens on `0.0.0.0`.
+
+### Publishing and updating the images
+
+Both images live on GitHub Container Registry and are pulled without any
+account or token — **as long as the package visibility is public**. A ghcr
+package is private until someone sets it (package page → Settings → Change
+visibility, one click); while it is private, `docker login ghcr.io` is needed
+first.
+
+```bash
+docker pull ghcr.io/aureld16/pyclean-audio:cpu
+docker pull ghcr.io/aureld16/pyclean-audio:gpu
+```
+
+Rebuilding and republishing is done by `.github/workflows/docker-publish.yml`:
+
+- **on demand**: Actions → *docker-publish* → Run workflow → pick `cpu` or `gpu`;
+- **on a tag**: `git tag docker-v1 && git push --tags` rebuilds and republishes
+  both.
+
+The workflow uses the repository's own `GITHUB_TOKEN` (`packages: write`), so
+there is no secret to configure. It publishes exactly two tags, `:cpu` and
+`:gpu` — no `:latest`: these images are versioned by digest, and a floating tag
+on a self-hosted tool is a support problem.
+
+To be explicit about what has been exercised:
+
+- The **CPU** image has been run end to end — health, non-root, `LavaSR` + NeMo
+  imports, a full enhancement **and** transcription job (WAV + MP3 + transcript +
+  timed SRT), cancellation during a live ffmpeg, graceful stop, and the test
+  suite (~209 tests, all green).
+- The **GPU** image has been **verified on real hardware by the maintainer**: on
+  an *NVIDIA GeForce RTX 2000 Ada Generation Laptop GPU*, torch in the container
+  is `2.14.1+cu130`, `torch.cuda.is_available()` is `True`, `/api/status` reports
+  `"device":"cuda"` with no extra configuration, and a video job (enhancement +
+  transcription) completed. `cu130` is therefore the right default for that
+  driver — change the index only for *another* machine whose driver is too old
+  (`--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126` and
+  friends). The image tested there was built from the same Dockerfile and
+  carries the same `cu130` wheels and NeMo as the published `:gpu`, but it is not
+  the published digest, so treat the published tag as built-but-equivalent
+  rather than byte-identical to what was run.
 
 ## Transcription (optional)
 
@@ -189,6 +244,9 @@ API answers **400** instead of accepting a job that would fail on
 If no speech is detected, the `.txt` contains the literal `(aucune parole
 détectée)` and **no** `.srt` is produced. Subtitles are not muxed into the MP4:
 they are a separate file to load in your player.
+
+In the [Docker](#docker) images this dependency is already there: both variants
+ship NeMo, so there is no `--asr` equivalent to pass.
 
 ## Output files and download names
 
@@ -404,15 +462,16 @@ queue.
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
-The same suite runs inside the image, with `ffmpeg` present so the
-`requires_ffmpeg` tests are not silently skipped:
+The same suite also runs inside the image, on the environment the CPU variant
+actually ships (ffmpeg present, so the `requires_ffmpeg` tests are not silently
+skipped; NeMo present, so it is slower than a local run):
 
 ```bash
 docker build --target test .        # installs requirements-dev.txt, runs pytest -rs, exits
 
-# smoke test of the running image
-docker build -t pyclean-audio .
-docker run --rm -d --name pyclean-audio -p 127.0.0.1:8787:8787 pyclean-audio
+# smoke test of a published image
+docker run --rm -d --name pyclean-audio -p 127.0.0.1:8787:8787 \
+  ghcr.io/aureld16/pyclean-audio:cpu
 curl -sf http://127.0.0.1:8787/api/status
 docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
 docker stop pyclean-audio
@@ -447,9 +506,10 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | Path | Role |
 | ---- | ---- |
 | `run.sh` | launcher: creates `.venv`, installs dependencies, starts the server (`--asr` for transcription) |
-| `Dockerfile` | container image: `builder` (venv), opt-in `test` (runs the suite), `final` (ffmpeg, non-root) |
+| `Dockerfile` | the two images: `base` + `builder-cpu` / `builder-gpu` -> `cpu` / `gpu`, opt-in `test` (runs the suite) |
+| `.github/workflows/docker-publish.yml` | rebuilds and republishes `:cpu` and `:gpu` on ghcr.io (manual run or `docker-v*` tag) |
 | `docker-entrypoint.sh` | container entrypoint: resolves `$PORT`, then `exec`s uvicorn so it is PID 1 |
-| `compose.yaml` | local deployment: loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
+| `compose.yaml` | the two published variants (`up -d cpu` / `up -d gpu`): loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
 | `.dockerignore` | keeps the build context small (`tests/` stays: the `test` stage needs it) |
 | `requirements-base.txt` | the 4 base packages, copied from `run.sh:45-47` (no NeMo) |
 | `app/main.py` | FastAPI API: uploads, queue, cancellation, retention, downloads |

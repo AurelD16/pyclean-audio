@@ -17,7 +17,8 @@ PORT="${PORT:-8787}"
 if python -c 'import importlib.util as u, sys; sys.exit(0 if u.find_spec("nemo") else 1)' 2>/dev/null; then
   echo "Transcription: available (Parakeet TDT, ~2.4 GB checkpoint downloaded on first use)."
 else
-  echo "Transcription: disabled — rebuild with --build-arg INSTALL_ASR=true (~2.4 GB download)."
+  echo "Transcription: unavailable — nemo_toolkit[asr] is not installed in this image."
+  echo "  The published :cpu and :gpu images ship it; a hand-built one may not."
 fi
 
 echo "Starting pyclean-audio on http://127.0.0.1:${PORT}"

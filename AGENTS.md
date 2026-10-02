@@ -30,14 +30,15 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # 209 tests, ~6 s, no model loaded
+.venv/bin/python -m pytest            # ~209 tests, ~6 s, no model loaded
 .venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
 
 # container (see the "Docker" section below)
-docker build -t pyclean-audio .                     # CPU image, multi-GB, a few minutes
-docker build --target test .                        # same env + ffmpeg, runs pytest, exits
-docker run --rm -p 127.0.0.1:8787:8787 pyclean-audio
-docker compose up -d --build                        # compose.yaml, same image
+docker compose up -d cpu                            # pulls ghcr.io/…:cpu, no build
+docker compose up -d gpu                            # …:gpu, needs the NVIDIA toolkit
+docker build --target cpu -t pyclean-audio:cpu .    # local build; `--target gpu` for CUDA
+docker build --target test .                        # runs the shipped env + pytest, exits
+docker run --rm -p 127.0.0.1:8787:8787 ghcr.io/aureld16/pyclean-audio:cpu
 ```
 
 No **model** is loaded by the tests: no LavaSR weights, no NeMo. What *is*
@@ -344,11 +345,26 @@ English.
 
 ## Docker
 
-`Dockerfile` (multi-stage `builder` → `test` / `final`), `docker-entrypoint.sh`,
-`.dockerignore`, `compose.yaml`, `requirements-base.txt`. It serves the same app
-on `0.0.0.0`; it never calls `run.sh` (that installs at start-up and hardcodes
-`--host 127.0.0.1`). Rules to keep if you touch it:
+Two published images, `ghcr.io/aureld16/pyclean-audio:{cpu,gpu}`, both with
+transcription. `Dockerfile` (multi-stage `base` + `builder-cpu` / `builder-gpu`
+→ `cpu` / `gpu`, plus an opt-in `test`), `docker-entrypoint.sh`,
+`.dockerignore`, `compose.yaml` (two services, no `build:` — it pulls),
+`requirements-base.txt`, `.github/workflows/docker-publish.yml`. It serves the
+same app on `0.0.0.0`; it never calls `run.sh` (that installs at start-up and
+hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
 
+- **The variant is a `--target`, never a tag guess**: `--target cpu` builds the
+  CPU wheels, `--target gpu` the CUDA ones, so a published tag cannot disagree
+  with its content. **`cpu` is the default target** — `docker build .` must keep
+  producing the image that runs anywhere. Because a stage can only derive from a
+  stage declared *before* it, that default is the last stage of the file: the
+  `FROM cpu AS default` alias. Same filesystem, same config, no extra layer —
+  only the image *id* differs, because the history records the extra stage.
+- **Everything shared is written once, in `base`**: `ENV`, `USER`, `WORKDIR`,
+  `COPY app/ static/`, `EXPOSE`, `HEALTHCHECK`, `ENTRYPOINT` and `CMD`. The two
+  variants differ only by `COPY --from=builder-{cpu,gpu} /opt/venv`. Do not
+  duplicate that block: two copies of `--host`/`--workers`/`HEALTHCHECK` are two
+  chances to disagree (that class of bug has already been corrected twice here).
 - **`--host 0.0.0.0` and `--workers 1`, always.** Not an optimization: the queue
   is one in-process `queue.Queue` with a single consumer, job state is a dict,
   and both models are lock-guarded singletons — a second worker duplicates the
@@ -358,34 +374,61 @@ on `0.0.0.0`; it never calls `run.sh` (that installs at start-up and hardcodes
   then PID 1 and `docker stop`'s SIGTERM reaches it. Drop the `exec` and every
   stop becomes a 10 s timeout + SIGKILL with a possibly orphaned ffmpeg. The
   script must also not create its own process group (`start_new_session` /
-  `os.killpg` in `app/processor.py`).
+  `os.killpg` in `app/processor.py`). Note that the `exec` only guarantees the
+  signal *arrives*: tearing the app down takes up to ~7 s with both models
+  loaded (measured 7.2 / 4.2 / 1.9 s), so Docker's 10 s grace is not generous —
+  on slower hardware a stop right after a transcription can still be SIGKILLed.
+  The damage is limited (the job in flight is lost, which "results are
+  ephemeral" already says).
 - **`torch` is installed first, from `$TORCH_INDEX_URL`.** LavaSR depends on
   torch itself, so letting it resolve pulls the default CUDA wheel from PyPI and
-  silently replaces it. The default index is the **CPU** one: the image stays
-  small and works everywhere, since the device is decided at load by
-  `torch.cuda.is_available()`. GPU = `--build-arg TORCH_INDEX_URL=…/cu130` +
-  `--gpus all` (NVIDIA Container Toolkit), nothing else.
-- **`INSTALL_ASR` defaults to `false`**, like `run.sh --asr`: `nemo_toolkit[asr]`
-  is several GB (91 more packages) and pins its own dependency versions.
-  Measured on top of the CPU build: `torch`/`torchaudio` stay CPU, but
-  `huggingface-hub` is downgraded (2.0.0 → 1.33.0) and `fsspec`/`packaging`/
-  `setuptools` are replaced — re-check that after bumping anything, and never
-  paper over a conflict with `--no-deps`.
+  silently replaces it. The `builder-cpu` index is the **CPU** one, `builder-gpu`
+  the **cu130** one (override with `--build-arg TORCH_INDEX_URL=…/cu126` for an
+  older driver). Nothing else configures the GPU: the device is decided at model
+  load by `torch.cuda.is_available()`, and the host needs the NVIDIA Container
+  Toolkit (`--gpus all`, or the `deploy` block in `compose.yaml`).
+- **Transcription is unconditional now.** `nemo_toolkit[asr]` is installed in both
+  builders; there is no `INSTALL_ASR` arg and no image without it. It drags
+  NeMo 3.0 + `transformers`, which constrains `huggingface-hub` to **1.33.0** in
+  both images (2.x when NeMo is absent). That combination — LavaSR against
+  hub 1.33.0 — is verified (imports, and a full enhancement + transcription job);
+  re-verify it after bumping anything, and never paper over a conflict with
+  `--no-deps`.
 - **No volume on `/app/data`.** `_purge_orphans()` wipes `data/jobs/` at every
   start (jobs live in memory), so a volume there would look persistent and be
   empty after each restart. The only volume is the HuggingFace cache
-  (`HF_HOME=/cache/huggingface`, mounted at `/cache`).
+  (`HF_HOME=/cache/huggingface`, mounted at `/cache`): ~115 MB for LavaSR,
+  ~2.4 GB more once Parakeet has been downloaded.
 - **Non-root (uid 1000) is required**, not decoration: `app/main.py:33-35`
   creates `data/jobs` at *import* time and HF needs a writable cache.
-- **ffmpeg in the image** (Debian bookworm, not Alpine: glibc for torch,
-  `libmp3lame` for `libmp3lame0`, and `ffprobe` by bare name in `PATH`). Also
-  mandatory in the `test` stage, or `requires_ffmpeg` silently skips.
+- **ffmpeg in `base`, so in every variant** (Debian bookworm, not Alpine: glibc
+  for torch, `libmp3lame` for `libmp3lame0`, and `ffprobe` by bare name in
+  `PATH`). It is what lets the `test` stage derive from `cpu` without installing
+  anything: without ffmpeg, `requires_ffmpeg` silently skips.
+- **`test` derives from `cpu`, not from the builder.** It installs
+  `requirements-dev.txt` as root (`USER root`, then back to `pyclean`), so the
+  suite runs as the runtime user on the environment that is actually shipped.
+  It is slow: NeMo has to be there.
 - **Healthcheck is `GET /api/status`**, shell form so it reads the live `PORT` —
-  `HEAD` returns 404 on every route of this app.
+  `HEAD` returns 404 on every route of this app. The check runs *inside* the
+  container, so it cannot see a `-p` mapping: with plain `docker run`, a `-e PORT`
+  change must be matched on both sides of the mapping or the container looks
+  healthy and is unreachable.
 - **Published on `127.0.0.1`**: there is no authentication at all, so
   `0.0.0.0:8787` would expose an open upload/processing service.
+- **ghcr packages are private until someone flips them.** `docker push` is not
+  enough for `docker pull` to work anonymously; the workflow only warns about it,
+  and the one-click change on the package page is the only way — neither
+  GITHUB_TOKEN nor a `write:packages` PAT can do it through the REST API (the
+  visibility endpoint answers 404).
 - Nothing is pinned (base tag, deps, LavaSR ref) — consistent with the rest of
-  the project. The image is not bit-reproducible; don't invent a lock file.
+  the project. The images are not bit-reproducible; don't invent a lock file.
+  `linux/amd64` only.
+- **Never write an exact count of packages or wheels in the documentation** —
+  "+91 packages", "16 CUDA wheels", "208 tests" all rot on the next build or the
+  next test. Write "several", `~N`, or the exact version of a single package
+  *when it has been read out of the image*. This is a recurring failure here:
+  three such numbers have already had to be corrected.
 
 ## Quick tests
 
