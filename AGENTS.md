@@ -416,11 +416,11 @@ hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
   healthy and is unreachable.
 - **Published on `127.0.0.1`**: there is no authentication at all, so
   `0.0.0.0:8787` would expose an open upload/processing service.
-- **ghcr packages are private until someone flips them.** `docker push` is not
-  enough for `docker pull` to work anonymously; the workflow only warns about it,
-  and the one-click change on the package page is the only way — neither
-  GITHUB_TOKEN nor a `write:packages` PAT can do it through the REST API (the
-  visibility endpoint answers 404).
+- **The ghcr package is public**: both tags pull anonymously, no login (verified
+  from a cold pull after dropping the local copies). A *new* package would be
+  private by default and need the same one-click change on the package page —
+  neither `GITHUB_TOKEN` nor a `write:packages` PAT can do it through the REST
+  API (the visibility endpoint answers 404).
 - Nothing is pinned (base tag, deps, LavaSR ref) — consistent with the rest of
   the project. The images are not bit-reproducible; don't invent a lock file.
   `linux/amd64` only.
@@ -429,6 +429,22 @@ hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
   next test. Write "several", `~N`, or the exact version of a single package
   *when it has been read out of the image*. This is a recurring failure here:
   three such numbers have already had to be corrected.
+
+### Publishing / updating the images
+
+Two tags only, `:cpu` and `:gpu`, both public on `ghcr.io`; no `:latest`. The
+README documents how to *use* them, not how they get there — this is the whole
+procedure.
+
+- `.github/workflows/docker-publish.yml` rebuilds and pushes them, on
+  `workflow_dispatch` (pick one variant) or on a `docker-v*` tag (both).
+- It authenticates with the repository's own `GITHUB_TOKEN`
+  (`permissions: packages: write`) — no secret to configure — and builds
+  `linux/amd64` only, one matrix leg per variant.
+- Locally: `docker login ghcr.io` then `docker tag` + `docker push` the target
+  you built. Verify with a cold pull after dropping the local copy.
+- A package is private until its visibility is set to public, once, by hand on
+  the package page; the workflow only warns when that has not been done.
 
 ## Quick tests
 

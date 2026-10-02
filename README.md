@@ -30,6 +30,7 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 
 - [Quick start](#quick-start)
 - [Docker](#docker)
+- [Local](#local)
 - [Transcription (optional)](#transcription-optional)
 - [Output files and download names](#output-files-and-download-names)
 - [Command line](#command-line)
@@ -44,6 +45,106 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 - [Project layout](#project-layout)
 
 ## Quick start
+
+Two ways to run it — both entirely on your machine, and neither asks for an
+account:
+
+- **[Docker](#docker)** — two ready-made images (`:cpu` for any machine, `:gpu`
+  for an NVIDIA card), pulled from a public registry. Nothing to install.
+- **[Local](#local)** — `ffmpeg`, `uv` and Python 3.11 on your machine, then
+  `./run.sh` builds the environment and starts the server.
+
+Both serve the same page on <http://127.0.0.1:8787>.
+
+## Docker
+
+Two images on GitHub Container Registry, pulled without any account or token.
+Compose pulls them from the registry; it builds nothing.
+
+```bash
+docker compose up -d cpu     # or: docker compose up -d gpu
+docker compose logs -f
+docker compose down          # add -v to drop the model cache too
+```
+
+Then open <http://127.0.0.1:8787>.
+
+| Image | Size | Use |
+| ----- | ---- | --- |
+| `ghcr.io/aureld16/pyclean-audio:cpu` | ~0.7 GB (3.2 GB unpacked) | any machine, no GPU — **the default** |
+| `ghcr.io/aureld16/pyclean-audio:gpu` | ~3.5 GB (10.7 GB unpacked) | NVIDIA GPU + NVIDIA Container Toolkit |
+
+### The two images, and how they differ
+
+- **Transcription is in both.** There is no “without transcription” image any
+  more: enhancement *and* Parakeet transcription work out of the box.
+- **The only technical difference is the engine** — `:cpu` carries CPU `torch`,
+  `:gpu` carries CUDA 13.0 `torch`. Same application, same page, same
+  environment variables, same behaviour.
+- **Nothing to configure.** The app picks the device itself at load
+  (`torch.cuda.is_available()`), so `:gpu` only needs `--gpus all`, which
+  compose passes for you.
+- **The real difference is speed** — see
+  [Measured performance](#measured-performance): enhancement runs at **~200×
+  real time** on GPU, and Parakeet transcribes 54 min of audio in ~20 s on GPU
+  against **~13× real time** on CPU. `:cpu` is therefore perfectly usable; it is
+  a choice, not a fallback.
+- `:gpu` needs a driver that supports CUDA 13.0, validated on an RTX 2000 Ada.
+  On an older driver, see [Development](#development).
+- **One container at a time**: both services listen on 127.0.0.1:8787.
+
+Without compose:
+
+```bash
+docker run -d --name pyclean-audio \
+  -p 127.0.0.1:8787:8787 \
+  -v pyclean-hf:/cache \
+  ghcr.io/aureld16/pyclean-audio:cpu
+
+# the GPU variant is the same command plus --gpus all (NVIDIA Container Toolkit
+# on the host) and the :gpu tag
+docker run -d --name pyclean-audio --gpus all \
+  -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache \
+  ghcr.io/aureld16/pyclean-audio:gpu
+```
+
+> [!WARNING]
+> **There is no authentication anywhere in the app.** Keep the published port on
+> `127.0.0.1`. `0.0.0.0:8787` would expose an unauthenticated upload, processing
+> and download service to your whole network. To reach it from another machine,
+> put an authenticating reverse proxy in front of it.
+
+> [!NOTE]
+> **Results are ephemeral, like the bare app**: jobs live in memory and
+> `data/jobs/` is wiped at every start, so nothing is mounted on `/app/data` and
+> `docker compose down` / a restart discards every result. The only volume worth
+> having is the HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the
+> LavaSR weights (**~115 MB**) and, on the first transcription, the Parakeet
+> checkpoint (**~2.4 GB**) are downloaded once into it and reused across restarts
+> and recreations.
+
+The image has a `HEALTHCHECK` on `GET /api/status`:
+
+```bash
+curl -sf http://127.0.0.1:8787/api/status   # {"status":"ready","device":"cpu",…}
+docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
+```
+
+A few things worth knowing before you change anything:
+
+- `PORT=9000 docker compose up -d cpu` publishes and listens on 9000. With plain
+  `docker run`, change **both** sides of the mapping
+  (`-e PORT=9000 -p 127.0.0.1:9000:9000`): a mismatch still reports `healthy`,
+  because the healthcheck runs inside the container and cannot see the publish.
+- The Parakeet checkpoint (2.4 GB) arrives on the first job that asks for a
+  transcript; `PYCLEAN_PRELOAD_ASR=1` fetches it at boot instead.
+- The image runs as a **non-root user** (uid 1000), and `ffmpeg`/`ffprobe` are
+  already inside it — the app calls them by bare name.
+
+## Local
+
+The path without Docker: a Python environment on your machine, created by
+`run.sh`.
 
 **Requirements:** [`ffmpeg`](https://ffmpeg.org/) and `ffprobe` on your `PATH`,
 [`uv`](https://docs.astral.sh/uv/), and Python 3.11 (created for you by `uv venv`).
@@ -80,143 +181,6 @@ source using the two linked players.
 > `./run.sh --asr` adds it to the existing `.venv` without recreating it.
 > Until then, the “Transcribe the cleaned audio” checkbox is disabled and says why —
 > see [Transcription](#transcription-optional).
-
-## Docker
-
-Two images, **both with transcription**, same server as `./run.sh` — same page,
-same defaults, dependencies already installed. Inside the container
-the server listens on `0.0.0.0`; on the host it is published on `127.0.0.1`
-only.
-
-| Image | Size | Use |
-| ----- | ---- | --- |
-| `ghcr.io/aureld16/pyclean-audio:cpu` | ~0.7 GB (3.2 GB unpacked) | any machine, no GPU — **the default** |
-| `ghcr.io/aureld16/pyclean-audio:gpu` | ~3.5 GB (10.7 GB unpacked) | NVIDIA GPU + NVIDIA Container Toolkit |
-
-```bash
-docker compose up -d cpu     # http://127.0.0.1:8787
-docker compose up -d gpu     # same port, so only one of the two at a time
-docker compose logs -f
-docker compose down          # add -v to drop the model cache too
-```
-
-Without compose — `docker compose` only pulls, this is the same thing:
-
-```bash
-docker run -d --name pyclean-audio \
-  -p 127.0.0.1:8787:8787 \
-  -v pyclean-hf:/cache \
-  ghcr.io/aureld16/pyclean-audio:cpu
-
-# the GPU variant is the same command plus --gpus all (NVIDIA Container Toolkit
-# on the host) and the :gpu tag
-docker run -d --name pyclean-audio --gpus all \
-  -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache \
-  ghcr.io/aureld16/pyclean-audio:gpu
-```
-
-The image has a `HEALTHCHECK` on `GET /api/status`:
-
-```bash
-curl -sf http://127.0.0.1:8787/api/status   # {"status":"ready","device":"cpu",…}
-docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
-```
-
-Building them yourself (only needed to change something):
-
-```bash
-docker build --target cpu -t pyclean-audio:cpu .   # `docker build .` is the same
-docker build --target gpu -t pyclean-audio:gpu .   # CUDA 13.0 wheels
-docker build --target test .                       # runs pytest -rs, then exits
-```
-
-The GPU variant is built against **CUDA 13.0** (`cu130`), so it needs an NVIDIA
-driver that supports it. On an older driver, rebuild with the index that matches
-it — `--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126` and so
-on; `nvidia-smi` reports the driver version.
-
-> [!WARNING]
-> **There is no authentication anywhere in the app.** Keep the published port on
-> `127.0.0.1`. `0.0.0.0:8787` would expose an unauthenticated upload, processing
-> and download service to your whole network. To reach it from another machine,
-> put an authenticating reverse proxy in front of it.
-
-> [!NOTE]
-> **Results are ephemeral, like the bare app**: jobs live in memory and
-> `data/jobs/` is wiped at every start, so nothing is mounted on `/app/data` and
-> `docker compose down` / a restart discards every result. The only volume worth
-> having is the HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the
-> LavaSR weights (**~115 MB**) and, on the first transcription, the Parakeet
-> checkpoint (**~2.4 GB**) are downloaded once into it and reused across restarts
-> and recreations.
-
-Other things worth knowing:
-
-- **Transcription is available in both images** — the “Transcribe the cleaned
-  audio” checkbox works out of the box, no flag to pass. The 2.4 GB checkpoint is
-  fetched on the first job that asks for a transcript (or at boot with
-  `PYCLEAN_PRELOAD_ASR=1`), not at image build time.
-- NeMo pulls `transformers`, which constrains `huggingface-hub`: the images ship
-  **`huggingface-hub` 1.33.0** (against 2.x without transcription). LavaSR and
-  NeMo 3.0 are verified to work together there — an enhancement + transcription
-  job has been run end to end on the CPU image.
-- `PORT=9000 docker compose up -d cpu` publishes and listens on 9000; the
-  entrypoint reads the same `PORT` as `run.sh`, and the healthcheck follows it.
-  With plain `docker run`, change **both** sides of the mapping
-  (`-e PORT=9000 -p 127.0.0.1:9000:9000`): a mismatch still reports `healthy`,
-  because the healthcheck runs inside the container and cannot see the publish.
-- The image runs as a **non-root user** (uid 1000) — required anyway, since
-  `app/main.py` creates its job directory at import time.
-- `ffmpeg`/`ffprobe` are in the image; the app calls them by bare name.
-- Nothing is pinned (base image tag, dependencies, LavaSR ref), exactly like
-  `run.sh`: the images are not bit-reproducible, and rebuilding later can bring a
-  newer `torch`. `linux/amd64` only.
-- `requirements-base.txt` is the base set copied from `run.sh`; the container
-  never calls `run.sh` (that installs at start-up and hardcodes
-  `--host 127.0.0.1`) — its venv is built at image build time, and the server
-  inside the container listens on `0.0.0.0`.
-
-### Publishing and updating the images
-
-Both images live on GitHub Container Registry and are pulled without any
-account or token — **as long as the package visibility is public**. A ghcr
-package is private until someone sets it (package page → Settings → Change
-visibility, one click); while it is private, `docker login ghcr.io` is needed
-first.
-
-```bash
-docker pull ghcr.io/aureld16/pyclean-audio:cpu
-docker pull ghcr.io/aureld16/pyclean-audio:gpu
-```
-
-Rebuilding and republishing is done by `.github/workflows/docker-publish.yml`:
-
-- **on demand**: Actions → *docker-publish* → Run workflow → pick `cpu` or `gpu`;
-- **on a tag**: `git tag docker-v1 && git push --tags` rebuilds and republishes
-  both.
-
-The workflow uses the repository's own `GITHUB_TOKEN` (`packages: write`), so
-there is no secret to configure. It publishes exactly two tags, `:cpu` and
-`:gpu` — no `:latest`: these images are versioned by digest, and a floating tag
-on a self-hosted tool is a support problem.
-
-To be explicit about what has been exercised:
-
-- The **CPU** image has been run end to end — health, non-root, `LavaSR` + NeMo
-  imports, a full enhancement **and** transcription job (WAV + MP3 + transcript +
-  timed SRT), cancellation during a live ffmpeg, graceful stop, and the test
-  suite (~209 tests, all green).
-- The **GPU** image has been **verified on real hardware by the maintainer**: on
-  an *NVIDIA GeForce RTX 2000 Ada Generation Laptop GPU*, torch in the container
-  is `2.14.1+cu130`, `torch.cuda.is_available()` is `True`, `/api/status` reports
-  `"device":"cuda"` with no extra configuration, and a video job (enhancement +
-  transcription) completed. `cu130` is therefore the right default for that
-  driver — change the index only for *another* machine whose driver is too old
-  (`--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126` and
-  friends). The image tested there was built from the same Dockerfile and
-  carries the same `cu130` wheels and NeMo as the published `:gpu`, but it is not
-  the published digest, so treat the published tag as built-but-equivalent
-  rather than byte-identical to what was run.
 
 ## Transcription (optional)
 
@@ -444,7 +408,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 
 ```bash
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 134 tests, ~6 s, no model weights loaded
+.venv/bin/python -m pytest        # ~209 tests, ~6 s, no model weights loaded
 .venv/bin/python -m ruff check .  # lint
 ```
 
@@ -462,6 +426,20 @@ queue.
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
+Building the images yourself (only needed to change something):
+
+```bash
+docker build --target cpu -t pyclean-audio:cpu .   # `docker build .` is the same
+docker build --target gpu -t pyclean-audio:gpu .   # CUDA 13.0 wheels
+docker build --target test .                       # runs pytest -rs, then exits
+```
+
+The GPU variant is built against **CUDA 13.0** (`cu130`), so it needs an NVIDIA
+driver that supports it — validated on an RTX 2000 Ada. On an older driver,
+rebuild with the index that matches it, for example
+`--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126`;
+`nvidia-smi` reports the driver version.
+
 The same suite also runs inside the image, on the environment the CPU variant
 actually ships (ffmpeg present, so the `requires_ffmpeg` tests are not silently
 skipped; NeMo present, so it is slower than a local run):
@@ -469,7 +447,7 @@ skipped; NeMo present, so it is slower than a local run):
 ```bash
 docker build --target test .        # installs requirements-dev.txt, runs pytest -rs, exits
 
-# smoke test of a published image
+# smoke test of an image pulled from the registry
 docker run --rm -d --name pyclean-audio -p 127.0.0.1:8787:8787 \
   ghcr.io/aureld16/pyclean-audio:cpu
 curl -sf http://127.0.0.1:8787/api/status
@@ -507,9 +485,9 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | ---- | ---- |
 | `run.sh` | launcher: creates `.venv`, installs dependencies, starts the server (`--asr` for transcription) |
 | `Dockerfile` | the two images: `base` + `builder-cpu` / `builder-gpu` -> `cpu` / `gpu`, opt-in `test` (runs the suite) |
-| `.github/workflows/docker-publish.yml` | rebuilds and republishes `:cpu` and `:gpu` on ghcr.io (manual run or `docker-v*` tag) |
+| `.github/workflows/docker-publish.yml` | rebuilds and pushes the two images to ghcr.io |
 | `docker-entrypoint.sh` | container entrypoint: resolves `$PORT`, then `exec`s uvicorn so it is PID 1 |
-| `compose.yaml` | the two published variants (`up -d cpu` / `up -d gpu`): loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
+| `compose.yaml` | the two variants (`up -d cpu` / `up -d gpu`): loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
 | `.dockerignore` | keeps the build context small (`tests/` stays: the `test` stage needs it) |
 | `requirements-base.txt` | the 4 base packages, copied from `run.sh:45-47` (no NeMo) |
 | `app/main.py` | FastAPI API: uploads, queue, cancellation, retention, downloads |
