@@ -147,7 +147,11 @@ English.
     `PYCLEAN_JOB_MAX` is reached, and returns 503 only if everything is active.
   - **yt-dlp jobs** (`_run_download_job`): the URL's metadata is resolved **in
     the request handler** (`downloader.resolve()`, metadata only), so a bad URL,
-    a private video or an oversized playlist is a 4xx at submit time. One entry
+    a private video or an oversized playlist is a 4xx at submit time. That
+    resolution is a **blocking network call in an `async def` route**, so it goes
+    through `await asyncio.to_thread` — like `await _save_upload` in the upload
+    endpoints. Without it a slow `extract_flat` freezes the whole API with
+    `--workers 1`: the 2 s status poll, the other uploads, and `cancel`. One entry
     -> the flat single-file shape (`keep_original=True`, A/B kept,
     `renderResults` unchanged); several -> a **folder job**
     (`keep_original=False`, per-entry `file_step` progress, source deleted after
@@ -273,11 +277,17 @@ English.
   checkbox — “▶ Origine” / “▶ Amélioré” in French), “Transcribe the cleaned
   audio” checkbox (off by default, **disabled together with the `./run.sh --asr`
   command when NeMo is missing** — `setTranscribeEnabled()` on the same
-  `available` as the API), a “site subtitles” checkbox + language select in the
-  YouTube mode (`paintYtdlpRow()`, part of the `applyLang` replay; the two
-  reasons to disable transcription — NeMo missing, subtitles checked — must not
-  fight), queue position, “Cancel processing” button, “Delete results” button,
-  job polling, per-file result list + ZIP download.
+  `available` as the API — **and disabled in the YouTube tab whatever the
+  subtitles box says**, because `POST /api/download` declares no `transcribe`
+  parameter: a ticked box there could never produce anything. `paintTranscribeRow`
+  composes the reasons deterministically, `off = asrMissing || ytd`, and only
+  the *wording* distinguishes “the site's subtitles replace it” from “not
+  available in this mode” (`ui.opt_transcribe_subs` / `ui.opt_transcribe_ytdlp`);
+  `tests/test_i18n.py` locks that shape, since CI has no JS runtime), a
+  “site subtitles” checkbox + language select in the
+  YouTube mode (`paintYtdlpRow()`, part of the `applyLang` replay), queue
+  position, “Cancel processing” button, “Delete results” button, job polling,
+  per-file result list + ZIP download.
   - **i18n**: two flags 🇬🇧 / 🇫🇷 **under the LavaSR badge** (`applyLang`).
     Default language `en`, remembered in `localStorage` (`pyclean.lang`);
     `document.documentElement.lang` and `<title>` follow. Translations live in a

@@ -660,9 +660,12 @@ def _host_addresses(host: str):
 
 
 def _is_local_ip(ip) -> bool:
-    """Loopback, private, link-local, reserved or multicast: never fetchable."""
+    """Not routable on the internet, hence never fetchable: loopback, private,
+    link-local, reserved, multicast — and, as the catch-all, anything the stdlib
+    does not call global (`100.64.0.0/10`, CGNAT/Tailscale's default range, is
+    `is_private == False` *and* `is_global == False`)."""
     return (ip.is_loopback or ip.is_private or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast)
+            or ip.is_reserved or ip.is_multicast or not ip.is_global)
 
 
 def _check_url(url: str) -> None:
@@ -944,9 +947,12 @@ async def download_media(url: str = Form(...),
     _check_url(url)
 
     # Metadata first: a bad URL, a private video or an oversized playlist is a
-    # 4xx now, not a job that dies a few seconds later.
+    # 4xx now, not a job that dies a few seconds later. `resolve()` is a blocking
+    # network call: in an `async def` route it goes through a thread, otherwise it
+    # freezes the whole API — status polling, other uploads, and *cancel* — for
+    # as long as a 500-entry playlist takes (same rule as `await _save_upload`).
     try:
-        entries = downloader.resolve(url)
+        entries = await asyncio.to_thread(downloader.resolve, url)
     except MediaError as e:
         raise ApiError(400, e.code, **e.params) from e
     if not entries:

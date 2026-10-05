@@ -294,13 +294,17 @@ and delivered as a single ZIP, exactly like a folder.
 | Download the site's subtitles | off | asks the site for its own subtitle track and converts it to `.srt` |
 | Subtitle language | `fr` | `fr` or `en` in the page; the API takes any yt-dlp language code |
 
-The site's subtitles are a **separate `.srt` file** (`<name>.<lang>.srt`,
-downloadable on its own, included in the playlist ZIP) and are **never muxed**
-into the MP4. They also **replace the Parakeet transcription**: checking that box
-greys the transcription checkbox out and unchecks it, because transcribing
-cleaned audio that already has subtitles is not what this option is for. If the
-site has no subtitle in the chosen language, nothing is produced for it and the
-job still succeeds.
+The site's subtitles are a **separate `.srt` file** — downloaded as
+`<name>.srt` and named the same inside the playlist ZIP (on disk, yt-dlp's
+intermediate is `<name>.<lang>.srt`, converted to SRT) — and are **never
+muxed** into the MP4.
+
+In that tab the **Parakeet transcription is unavailable**: `POST /api/download`
+has no `transcribe` parameter, so the checkbox is greyed out and unchecked
+whatever the subtitles box says (the wording says which reason applies). Asking
+for the site's subtitles and asking for a transcript of the cleaned audio are
+two different things; you get one or the other. If the site has no subtitle in
+the chosen language, nothing is produced for it and the job still succeeds.
 
 Limits are the folder ones — a playlist is refused above
 `PYCLEAN_MAX_FILES` entries, and the total declared size above

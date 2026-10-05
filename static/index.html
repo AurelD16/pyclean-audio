@@ -475,6 +475,7 @@
       "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
       "ui.opt_transcribe_subs": "— unavailable: the site's subtitles replace the Parakeet transcription",
+      "ui.opt_transcribe_ytdlp": "— unavailable here: a downloaded video is enhanced, but never transcribed (its subtitles come from the site)",
       "ui.go": "Enhance audio",
       "ui.go_n": "Enhance audio — {n} file(s)",
       "ui.cancel": "Cancel processing",
@@ -583,6 +584,7 @@
       "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
       "ui.opt_transcribe_subs": "— indisponible : les sous-titres du site remplacent la transcription Parakeet",
+      "ui.opt_transcribe_ytdlp": "— indisponible ici : une vidéo téléchargée est améliorée, jamais transcrite (ses sous-titres viennent du site)",
       "ui.go": "Améliorer l'audio",
       "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
       "ui.cancel": "Annuler le traitement",
@@ -1407,12 +1409,15 @@ function subtitlesOn() {
 }
 
 function paintTranscribeRow() {
-  const subs = subtitlesOn();
-  const off = asrMissing || subs;
+  const ytd = mode === "ytdlp", subs = subtitlesOn();
+  // `POST /api/download` n'a pas de paramètre `transcribe`: dans l'onglet
+  // YouTube la transcription Parakeet est impossible, sous-titres cochés ou non.
+  const off = asrMissing || ytd;
   $("transcribe").disabled = off;
   if (off) $("transcribe").checked = false;
   $("transcribeRow").classList.toggle("off", off);
   $("transcribeDesc").textContent = t(subs ? "ui.opt_transcribe_subs"
+    : ytd ? "ui.opt_transcribe_ytdlp"
     : asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
 }
 
