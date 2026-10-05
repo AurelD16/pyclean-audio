@@ -25,9 +25,13 @@ name: docker-publish
 # written as `ghcr.io/${{ github.repository }}` inline.
 #
 # No secret to configure: GITHUB_TOKEN is enough for the repository's own
-# packages. The images are big (the GPU one carries CUDA torch), so the build
-# cache is kept per variant with mode=min to stay inside a standard runner's
-# disk budget.
+# packages — provided the package grants this repository access (package
+# settings → "Manage Actions access" → role Write). A package first pushed by
+# hand does not get that for free, and the symptom is deceptive: the image
+# builds and exports, then the push alone is refused with
+# `denied: permission_denied: write_package`. The images are big (the GPU one
+# carries CUDA torch), so the build cache is kept per variant with mode=min to
+# stay inside a standard runner's disk budget.
 
 on:
   workflow_dispatch:

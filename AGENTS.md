@@ -455,17 +455,22 @@ is the whole procedure.
 - It authenticates with the repository's own `GITHUB_TOKEN`
   (`permissions: packages: write`) — no secret to configure — and builds
   `linux/amd64` only, one matrix leg per variant.
-- **`GITHUB_TOKEN` can only publish while the repository's default workflow token
-  can write.** Settings → Actions → General → Workflow permissions ships
-  *read-only*, and that cap wins over the `permissions:` block above: the image
-  builds, then the push dies at the last metre with
-  `denied: permission_denied: write_package`. Because the build itself
-  succeeded, it reads like a registry or visibility problem — it is neither.
-  Read it with `GET /repos/{owner}/{repo}/actions/permissions/workflow`
-  (`default_workflow_permissions`) and set it with the **same** endpoint and
-  `PUT` (`PATCH` answers 404). The tighter alternative is a classic PAT with
-  `write:packages` in a secret: the token stays read-only for every other
-  workflow, at the cost of a credential to keep.
+- **`GITHUB_TOKEN` is enough, but two things outside the workflow file decide
+  whether a run can actually publish**, and neither fails where you would look:
+  1. the repository's default workflow token must be allowed to write (Settings →
+     Actions → General → Workflow permissions; this repository is set to *Read and
+     write permissions*, the workflow only ever asks for `contents: read` +
+     `packages: write`);
+  2. the **package** must grant this repository access: package settings →
+     **Manage Actions access** → Add repository → role **Write**.
+
+  Miss (2) and the image builds perfectly, layers and all, then the push is
+  refused with `denied: permission_denied: write_package` — which reads like a
+  registry, token or visibility problem and is none of them. A package whose
+  first image was pushed *by hand* (a PAT, the local procedure below) does not
+  get Actions access for free; only a package created by a workflow run does.
+  There is no REST API for (2) on a package scoped to a personal account: it is
+  a click in the settings page, so check it before trusting a release.
 - Locally: `docker login ghcr.io` then `docker tag` + `docker push` the target
   you built. Verify with a cold pull after dropping the local copy.
 - A package is private until its visibility is set to public, once, by hand on
