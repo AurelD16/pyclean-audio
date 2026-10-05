@@ -129,3 +129,80 @@ def test_le_texte_par_defaut_de_la_page_est_anglais(html, page_dict):
     otherwise the first paint is not in the announced language."""
     for key, text in re.findall(r'data-i18n="([\w.]+)">([^<]*)</', html):
         assert text.strip() == page_dict["ui"]["en"][key].strip(), key
+
+
+# --------------------------------- l'étape courante (régression i18n)
+
+# Le libellé affiché au-dessus de la barre de progression avait disparu après la
+# refonte i18n : `jobStage` rendait une étape **déjà traduite**, `showProgress`
+# la traduisait une seconde fois, et `stageText` sur une chaîne retombait sur
+# `raw` — soit "". `jobStage` doit donc rendre le triple `{key, args, raw}`
+# (son contrat, documenté dans AGENTS.md) et `stageText` doit accepter les deux
+# formes. La CI n'a pas de runtime JS : on vérifie la forme des sources, sans
+# geler la mise en forme.
+
+BLOC_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+LIGNE_COMMENT_RE = re.compile(r"//[^\n]*")
+
+
+def _js(source):
+    """Sans commentaires ni espaces superflus : ce qui est comparé est le code,
+    pas sa façon de s'écrire."""
+    nu = LIGNE_COMMENT_RE.sub(" ", BLOC_COMMENT_RE.sub(" ", source))
+    return re.sub(r"\s+", " ", nu)
+
+
+def fonction_js(html, signature):
+    """Le source d'une `function`, jusqu'à l'accolade qui la referme."""
+    start = html.index(signature)
+    i, profonds = html.index("{", start), 0
+    while True:
+        if html[i] == "{":
+            profonds += 1
+        elif html[i] == "}":
+            profonds -= 1
+            if profonds == 0:
+                break
+        i += 1
+    return _js(html[start:i + 1])
+
+
+def affectation_js(html, declaration):
+    """Le source d'une affectation, jusqu'au `;` qui la termine."""
+    start = html.index(declaration)
+    return _js(html[start:html.index(";", start)])
+
+
+def test_job_stage_rend_le_triple_sans_le_traduire(html):
+    """`jobStage` rend `{key, args, raw}` : c'est `showProgress` qui traduit.
+    Le prétraduire appliquait `stageText` deux fois et vidait le libellé."""
+    src = affectation_js(html, "const jobStage")
+    assert "stageText(" not in src, f"jobStage ne doit plus traduire : {src}"
+    for champ, valeur in (
+        ("key", "j.stage_key"),
+        ("args", "j.stage_args"),
+        ("raw", "j.stage"),
+    ):
+        assert re.search(rf"\b{champ}\s*:\s*{re.escape(valeur)}\b", src), src
+
+
+def test_stage_text_accepte_une_etape_deja_traduite(html):
+    """Une chaîne est renvoyée telle quelle : sans ce cas, le repli `raw` du cas
+    `{key, args, raw}` la réduirait à "" (et le changement de langue, qui rejoue
+    `stageText(currentStage)`, aussi)."""
+    src = fonction_js(html, "function stageText(")
+    garde = re.search(r"typeof\s+st\s*===?\s*[\"']string[\"']", src)
+    assert garde, f"stageText doit accepter une chaîne déjà traduite : {src}"
+    assert garde.start() < src.index("!st.key"), (
+        "le cas « chaîne » doit précéder le repli `raw`, qui la viderait"
+    )
+
+
+def test_le_libelle_vient_du_triple_jusqu_a_la_barre(html):
+    """Toute la chaîne : `poll` → `jobStage(job)` → `showProgress` → `stageText`
+    → `#stageText`. `showProgress` doit continuer à traduire, sinon un changement
+    de langue ne réécrirait plus l'étape affichée."""
+    assert re.search(
+        r"showProgress\(\s*jobStage\(job\)\s*,\s*job\.progress\s*\)", html
+    )
+    assert "stageText(stage)" in fonction_js(html, "function showProgress(")

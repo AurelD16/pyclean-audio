@@ -607,6 +607,9 @@ function t(key, params) {
    porte l'étape imbriquée d'un job « dossier ». */
 function stageText(st) {
   if (!st) return "";
+  /* une étape déjà traduite est renvoyée telle quelle (rejeu après changement
+     de langue) : sans ce cas, `!st.key` la réduirait à `raw`, soit "" */
+  if (typeof st === "string") return st;
   if (!st.key) return st.raw || "";
   const tpl = lookup(st.key);
   if (tpl == null) return st.raw || st.key;
@@ -626,7 +629,10 @@ function errorText(code, params, raw) {
   return raw || "";
 }
 
-const jobStage = (j) => stageText({ key: j.stage_key, args: j.stage_args, raw: j.stage });
+/* Le triple {key, args, raw} d'une étape, **non** pré-traduit : c'est
+   `showProgress`/`applyLang` qui passent le résultat à `stageText`. Traduire
+   ici ferait appliquer `stageText` deux fois et afficherait une ligne vide. */
+const jobStage = (j) => ({ key: j.stage_key, args: j.stage_args, raw: j.stage });
 
 /* Les libellés des résultats (boutons de téléchargement, lignes d'un dossier)
    sont écrits dans des nœuds créés à la volée : ils sont enregistrés ici pour
