@@ -206,3 +206,46 @@ def test_le_libelle_vient_du_triple_jusqu_a_la_barre(html):
         r"showProgress\(\s*jobStage\(job\)\s*,\s*job\.progress\s*\)", html
     )
     assert "stageText(stage)" in fonction_js(html, "function showProgress(")
+
+
+def test_aucune_cle_json_en_double(html):
+    """`JSON.parse` et `json.loads` gardent la **dernière** occurrence d'une clé
+    dupliquée : les tests passeraient, l'éditeur serait trompé. Le dictionnaire
+    doit donc être sans doublon, dans les deux sections et les deux langues."""
+    def paires(repere):
+        def hook(pairs):
+            vus, doublons = set(), set()
+            for cle, _ in pairs:
+                if cle in vus:
+                    doublons.add(cle)
+                vus.add(cle)
+            assert not doublons, f"{repere}: clé(s) en double {sorted(doublons)}"
+            return dict(pairs)
+
+        return hook
+
+    m = DICT_RE.search(html)
+    assert m, "the translations JSON block is missing from index.html"
+    json.loads(m.group(1), object_pairs_hook=paires("i18n"))
+
+
+def test_la_transcription_est_indisponible_dans_le_mode_youtube(html):
+    """`POST /api/download` ne declare **pas** `transcribe`: dans l'onglet
+    YouTube la transcription Parakeet est donc impossible, sous-titres cochés ou
+    non (criterion 7 amendé). Une case cochée puis activée silencieusement serait
+    une promesse non tenue. CI n'a pas de runtime JS — comme les tests
+    ci-dessus, on verifie la forme des sources."""
+    src = fonction_js(html, "function paintTranscribeRow(")
+    off = re.search(r"const\s+off\s*=\s*([^;]+);", src)
+    assert off, src
+    # les deux raisons deterministes : NeMo absent OU mode YouTube
+    assert "asrMissing" in off.group(1) and "ytd" in off.group(1), off.group(1)
+    assert "subs" not in off.group(1), (
+        f"la case des sous-titres ne doit pas piloter `off` : {off.group(1)}")
+    assert re.search(r"\$\(\s*[\"']transcribe[\"']\s*\)\.disabled\s*=\s*off", src), src
+    assert re.search(r"if\s*\(\s*off\s*\)\s*\$\(\s*[\"']transcribe[\"']\s*\)"
+                     r"\.checked\s*=\s*false", src), src
+    assert re.search(r"transcribeRow[\"']?\)?\.classList\.toggle\([\"']off[\"'],\s*off\)",
+                     src), src
+    # le libelle dit pourquoi, y compris sans sous-titres
+    assert "ui.opt_transcribe_ytdlp" in src, src

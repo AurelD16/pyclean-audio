@@ -35,6 +35,7 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 - [Output files and download names](#output-files-and-download-names)
 - [Command line](#command-line)
 - [Whole folders](#whole-folders)
+- [YouTube and other sites](#youtube-and-other-sites)
 - [Web interface](#web-interface)
 - [Configuration](#configuration)
 - [Queue, cancellation, retention](#queue-cancellation-retention)
@@ -156,8 +157,8 @@ cd pyclean-audio
 ./run.sh
 ```
 
-`run.sh` creates `.venv`, installs LavaSR + FastAPI + uvicorn on first run
-(~4 GB of dependencies, a few minutes), and starts the server on
+`run.sh` creates `.venv`, installs LavaSR + FastAPI + uvicorn + `yt-dlp` on
+first run (~4 GB of dependencies, a few minutes), and starts the server on
 <http://127.0.0.1:8787> (it opens your browser if it can).
 
 The first launch downloads the LavaSR weights from HuggingFace
@@ -172,8 +173,9 @@ PORT=9000 ./run.sh       # custom port
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 ```
 
-Then drop an audio or video file on the page, and compare the result with the
-source using the two linked players.
+Then drop an audio or video file on the page — or paste a video URL in the
+“YouTube” tab — and compare the result with the source using the two linked
+players.
 
 > [!TIP]
 > Transcription needs an extra dependency (NeMo), which is **not** installed by
@@ -224,6 +226,7 @@ On disk, inside the job folder:
 | `<name>_pyclean-audio.mp4`  | videos                                            |
 | `<name>_transcript.txt`     | `--transcribe` / web checkbox                     |
 | `<name>_pyclean-audio.srt`  | `--transcribe`, only if timestamps were returned  |
+| `<name>.<lang>.srt`        | downloaded subtitles ([YouTube](#youtube-and-other-sites)), converted to SRT |
 
 Downloaded files are renamed: the source is served as `<name>.wav`, the enhanced
 audio as `<name>_pyclean-audio.wav` / `.mp3`. In folder mode the ZIP keeps the
@@ -276,17 +279,60 @@ are processed sequentially, each with its own download link, plus a
 > after enhancement (it only existed for the A/B players), which is about 43 %
 > less disk. Only the enhanced audio, in the chosen format, is downloadable.
 
+## YouTube and other sites
+
+**Web only** — the “YouTube” tab (next to *File* and *Folder*): paste the URL of
+a **video** or of a **whole playlist**, and `yt-dlp` does the download. The file
+then goes through the **same pipeline as an upload** (`app/processor.py`, LavaSR
+v2, then MP3 / MP4 remux): same queue, same cancellation, same retention, same
+A/B comparison and same downloads. A playlist is processed **entry by entry**
+and delivered as a single ZIP, exactly like a folder.
+
+| Option | Default | Effect |
+| ------ | ------- | ------ |
+| Output format | `mp4` | video + enhanced audio; `mp3` **drops the video entirely** (yt-dlp then fetches the audio-only stream, nothing is re-encoded from a video) |
+| Download the site's subtitles | off | asks the site for its own subtitle track and converts it to `.srt` |
+| Subtitle language | `fr` | `fr` or `en` in the page; the API takes any yt-dlp language code |
+
+The site's subtitles are a **separate `.srt` file** — downloaded as
+`<name>.srt` and named the same inside the playlist ZIP (on disk, yt-dlp's
+intermediate is `<name>.<lang>.srt`, converted to SRT) — and are **never
+muxed** into the MP4.
+
+In that tab the **Parakeet transcription is unavailable**: `POST /api/download`
+has no `transcribe` parameter, so the checkbox is greyed out and unchecked
+whatever the subtitles box says (the wording says which reason applies). Asking
+for the site's subtitles and asking for a transcript of the cleaned audio are
+two different things; you get one or the other. If the site has no subtitle in
+the chosen language, nothing is produced for it and the job still succeeds.
+
+Limits are the folder ones — a playlist is refused above
+`PYCLEAN_MAX_FILES` entries, and the total declared size above
+`PYCLEAN_MAX_FOLDER_TOTAL`. `yt-dlp` itself stops a single file above
+`PYCLEAN_MAX_SIZE`, and `PYCLEAN_MAX_DURATION` still applies once the file is
+being processed.
+
+> [!NOTE]
+> `yt-dlp` is in the **base install** (`run.sh`, `requirements-base.txt`, and
+> therefore in both Docker images) — it is pure Python and pulls no torch. When
+> it is missing, the tab is disabled with the command to run and the API answers
+> **400 `ytdlp_unavailable`**; nothing breaks in the rest of the app.
+
 ## Web interface
 
 - **Two languages**, **English by default**: the two flags (🇬🇧 / 🇫🇷) under the
   LavaSR badge switch the whole page, including the progress stage, the error
   messages, the result list and the download buttons. The choice is remembered
   in the browser (`localStorage`); a fresh browser therefore starts in English.
-- **Drag & drop** a single file, or a whole folder (recursive directory
-  enumeration via `webkitGetAsEntry` / `webkitdirectory`).
+- **Three sources**: a single file, a whole folder (recursive directory
+  enumeration via `webkitGetAsEntry` / `webkitdirectory`), or a video/playlist
+  URL downloaded with `yt-dlp` (see [above](#youtube-and-other-sites)).
 - **Options**: “Reduce noise”, input bandwidth (8/16/24 kHz), “Cutoff (Hz,
-  advanced)”, output format (folder mode), and “Transcribe the cleaned audio”
-  (off by default; disabled with an explanation when NeMo is not installed).
+  advanced)”, output format (folder mode, YouTube mode), and “Transcribe the
+  cleaned audio” (off by default; disabled with an explanation when NeMo is not
+  installed, and disabled outright in the YouTube tab, where
+  `POST /api/download` takes no `transcribe` — the site's subtitles, or
+  nothing).
 - **A/B comparison**: the two players (source / enhanced) are **linked** — play,
   pause and seek are mirrored, and the “▶ Source” / “▶ Enhanced” buttons switch
   versions at the same timecode. Untick “linked” to decouple them.
@@ -401,6 +447,19 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
   is an artefact of the file, not of the interface.
 - The SRT is only written if the model returns timestamps; it is never muxed
   into the MP4.
+- **`yt-dlp` breaks against the sites it supports** (YouTube changes often) and
+  is deliberately unpinned here, like every other dependency. The failure stays
+  readable — a translated `download_failed` with a truncated detail, never a
+  traceback — but a site can stop working until `yt-dlp` is updated.
+- The server fetches a **URL supplied by the client**, on a LAN, without
+  authentication. The scheme must be `http`/`https` and the host must resolve to
+  a public address (loopback, private, link-local, reserved and multicast
+  addresses are refused **before** any request). A *public* URL that redirects to
+  an internal address cannot be intercepted cheaply and stays inside `yt-dlp`.
+- Downloading is subject to the site's terms of service and to copyright. The
+  feature ships **no** circumvention: no cookies, no `--cookies-from-browser`, no
+  credentials, no DRM removal, no geo bypass. You are responsible for what you
+  point it at.
 - `HEAD` requests return 404 on the FastAPI routes (no browser impact: the page
   uses `GET`).
 
@@ -465,7 +524,13 @@ JOB=$(curl -s -X POST -F "file=@test_8k.wav" http://127.0.0.1:8787/api/enhance \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 curl -s http://127.0.0.1:8787/api/jobs/$JOB
 
-# model + transcription availability
+# a YouTube video (or playlist) URL — the same pipeline as an upload
+JOB=$(curl -s -X POST -F "url=https://www.youtube.com/watch?v=VIDEO_ID" \
+  -F "fmt=mp4" -F "subtitles=true" -F "subtitle_lang=fr" \
+  http://127.0.0.1:8787/api/download | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+curl -s http://127.0.0.1:8787/api/jobs/$JOB       # artifacts, or files[] for a playlist
+
+# model + transcription availability (and yt-dlp)
 curl -s http://127.0.0.1:8787/api/status
 ```
 
@@ -489,9 +554,10 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | `docker-entrypoint.sh` | container entrypoint: resolves `$PORT`, then `exec`s uvicorn so it is PID 1 |
 | `compose.yaml` | the two variants (`up -d cpu` / `up -d gpu`): loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
 | `.dockerignore` | keeps the build context small (`tests/` stays: the `test` stage needs it) |
-| `requirements-base.txt` | the 4 base packages, copied from `run.sh:45-47` (no NeMo) |
-| `app/main.py` | FastAPI API: uploads, queue, cancellation, retention, downloads |
+| `requirements-base.txt` | the 5 base packages (yt-dlp included), copied from `run.sh` (no NeMo) |
+| `app/main.py` | FastAPI API: uploads, yt-dlp jobs, queue, cancellation, retention, downloads |
 | `app/processor.py` | ffmpeg pipeline: decode, extract, remux, MP3, job orchestration |
+| `app/downloader.py` | `yt-dlp` wrapper: URL resolution (metadata only), download, subtitles, name sanitising |
 | `app/enhancer.py` | `LavaEnhance2` wrapper, 16 kHz windowed reader, block planning |
 | `app/transcriber.py` | Parakeet/NeMo wrapper, chunk planning, SRT rendering |
 | `app/cancel.py` | cooperative cancellation + global GPU lock |

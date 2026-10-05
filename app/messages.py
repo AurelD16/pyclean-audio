@@ -30,6 +30,9 @@ STAGES: dict[str, str] = {
     "folder_queued": "Folder: {count} files queued…",
     "file_step": "File {index}/{total} — {name}: {inner}",
     "folder_done": "Done — {done}/{total} files",
+    # yt-dlp (app/downloader.py)
+    "resolve": "Reading the video or playlist…",
+    "fetch": "Downloading (yt-dlp)…",
     "done": "Done",
     "cancelled": "Cancelled",
     "error": "Error",
@@ -44,10 +47,20 @@ ERRORS: dict[str, str] = {
     # request parameters
     "bad_input_sr": "input_sr must be 8000, 16000 or 24000",
     "bad_output_format": "output_format must be wav or mp3",
+    "bad_download_format": "format must be mp3 or mp4",
+    "ytdlp_unavailable": (
+        "yt-dlp is not installed. Run ./run.sh, then restart the server."
+    ),
     "transcribe_unavailable": (
         "Transcription unavailable: nemo_toolkit[asr] is not installed. "
         "Run ./run.sh --asr, then restart the server."
     ),
+    # download (app/downloader.py, app/main.py)
+    "bad_url": "Invalid URL: {url}",
+    "blocked_url": "Refused URL: it points to a private or local address",
+    "playlist_too_large": "Playlist too large: {entries} videos (max {max})",
+    "download_too_large": "Download too large in total ({gb} GB max)",
+    "download_failed": "Download failed: {detail}",
     # upload
     "unsupported_format": "Unsupported format: {ext}",
     "bad_filename": "Invalid file name: {name}",
