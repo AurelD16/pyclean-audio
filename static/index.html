@@ -53,6 +53,7 @@
     font-size: 13px; cursor: pointer;
   }
   .seg button.active { background: var(--accent); color: #1a1205; font-weight: 600; }
+  .seg button:disabled { opacity: .4; cursor: not-allowed; }
   .drop {
     border: 2px dashed var(--line); border-radius: 12px; padding: 44px 20px;
     text-align: center; cursor: pointer; transition: all .15s; background: var(--panel2);
@@ -65,10 +66,15 @@
   .opts { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; }
   .opt { display: flex; flex-direction: column; gap: 6px; }
   .opt label.t { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
-  select, input[type=number] {
+  select, input[type=number], input[type=url] {
     background: var(--panel2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 10px; font-size: 14px; min-width: 170px;
   }
+  select:disabled, input:disabled { opacity: .5; }
+  .urlblock { margin-top: 4px; }
+  .urlblock .big { font-size: 17px; margin-bottom: 8px; word-break: break-all; }
+  .urlblock input { width: 100%; }
+  .urlblock .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 22px; cursor: pointer; }
   .check input { width: 16px; height: 16px; accent-color: var(--accent); }
   .check span.desc { color: var(--muted); font-size: 12.5px; }
@@ -182,10 +188,17 @@
     <div class="seg">
       <button id="modeFile" class="active" data-i18n="ui.mode_file">File</button>
       <button id="modeFolder" data-i18n="ui.mode_folder">Folder (recursive)</button>
+      <button id="modeYtdlp" data-i18n="ui.mode_ytdlp">YouTube</button>
     </div>
     <div id="drop" class="drop">
       <div class="big" id="dropTitle">Drop an audio or video file here</div>
       <div class="hint" id="dropHint">or click to browse — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…</div>
+    </div>
+    <div id="ytdlpBlock" class="urlblock hidden">
+      <div class="big" id="urlTitle">Paste a video or playlist URL</div>
+      <input type="url" id="url" placeholder="https://www.youtube.com/watch?v=…"
+             autocomplete="off" spellcheck="false">
+      <div class="hint" id="urlHint" data-i18n="ui.opt_url_help">— any site yt-dlp supports. The file is downloaded, then enhanced like an upload.</div>
     </div>
     <input type="file" id="fileInput" hidden
            accept=".wav,.mp3,.flac,.ogg,.oga,.m4a,.aac,.opus,.wma,.aiff,.aif,.mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.mpg,.mpeg,.wmv,.flv,audio/*,video/*">
@@ -211,6 +224,20 @@
           <option value="wav" data-i18n="ui.opt_out_wav">WAV 48 kHz (uncompressed)</option>
         </select>
       </div>
+      <div class="opt hidden" id="ytdlpFormatOpt">
+        <label class="t" for="ytdlpFormat" data-i18n="ui.opt_out_format">Output format</label>
+        <select id="ytdlpFormat">
+          <option value="mp4" selected data-i18n="ui.opt_ytdlp_mp4">MP4 (enhanced audio + video)</option>
+          <option value="mp3" data-i18n="ui.opt_ytdlp_mp3">MP3 (audio only — the video is dropped)</option>
+        </select>
+      </div>
+      <div class="opt hidden" id="subtitleLangOpt">
+        <label class="t" for="subtitleLang" data-i18n="ui.opt_subtitle_lang">Subtitle language</label>
+        <select id="subtitleLang" disabled>
+          <option value="fr" selected data-i18n="ui.opt_sub_fr">French</option>
+          <option value="en" data-i18n="ui.opt_sub_en">English</option>
+        </select>
+      </div>
     </div>
 
     <label class="check">
@@ -220,6 +247,10 @@
     <label class="check" id="transcribeRow">
       <input type="checkbox" id="transcribe">
       <span><b data-i18n="ui.opt_transcribe">Transcribe the cleaned audio</b> <span class="desc" id="transcribeDesc"></span></span>
+    </label>
+    <label class="check hidden" id="subtitlesRow">
+      <input type="checkbox" id="subtitles">
+      <span><b data-i18n="ui.opt_subtitles">Download the site's subtitles</b> <span class="desc" id="subtitlesDesc" data-i18n="ui.opt_subtitles_desc">— they replace the Parakeet transcription (the cleaned audio is not transcribed)</span></span>
     </label>
 
     <button class="primary" id="go" disabled>Enhance audio</button>
@@ -301,6 +332,8 @@
       "folder_queued": "Folder: {count} files queued…",
       "file_step": "File {index}/{total} — {name}: {inner}",
       "folder_done": "Done — {done}/{total} files",
+      "resolve": "Reading the video or playlist…",
+      "fetch": "Downloading (yt-dlp)…",
       "done": "Done",
       "cancelled": "Cancelled",
       "error": "Error",
@@ -308,7 +341,14 @@
       "queue_full": "Queue full ({max} jobs): try again in a moment.",
       "bad_input_sr": "input_sr must be 8000, 16000 or 24000",
       "bad_output_format": "output_format must be wav or mp3",
+      "bad_download_format": "format must be mp3 or mp4",
+      "ytdlp_unavailable": "yt-dlp is not installed. Run ./run.sh, then restart the server.",
       "transcribe_unavailable": "Transcription unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart the server.",
+      "bad_url": "Invalid URL: {url}",
+      "blocked_url": "Refused URL: it points to a private or local address",
+      "playlist_too_large": "Playlist too large: {entries} videos (max {max})",
+      "download_too_large": "Download too large in total ({gb} GB max)",
+      "download_failed": "Download failed: {detail}",
       "unsupported_format": "Unsupported format: {ext}",
       "bad_filename": "Invalid file name: {name}",
       "file_too_large": "File too large (2 GB max): {name}",
@@ -342,6 +382,8 @@
       "folder_queued": "Dossier : {count} fichiers en file d'attente…",
       "file_step": "Fichier {index}/{total} — {name} : {inner}",
       "folder_done": "Terminé — {done}/{total} fichiers",
+      "resolve": "Lecture de la vidéo ou de la playlist…",
+      "fetch": "Téléchargement (yt-dlp)…",
       "done": "Terminé",
       "cancelled": "Annulé",
       "error": "Erreur",
@@ -349,7 +391,14 @@
       "queue_full": "File d'attente pleine ({max} traitements) : réessayez dans un instant.",
       "bad_input_sr": "input_sr doit être 8000, 16000 ou 24000",
       "bad_output_format": "output_format doit être wav ou mp3",
+      "bad_download_format": "format doit être mp3 ou mp4",
+      "ytdlp_unavailable": "yt-dlp n'est pas installé. Lancez ./run.sh puis redémarrez le serveur.",
       "transcribe_unavailable": "Transcription indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr puis redémarrez le serveur.",
+      "bad_url": "URL invalide : {url}",
+      "blocked_url": "URL refusée : elle pointe vers une adresse privée ou locale",
+      "playlist_too_large": "Playlist trop volumineuse : {entries} vidéos (max {max})",
+      "download_too_large": "Téléchargement trop volumineux au total ({gb} Go max)",
+      "download_failed": "Téléchargement échoué : {detail}",
       "unsupported_format": "Format non pris en charge : {ext}",
       "bad_filename": "Nom de fichier invalide : {name}",
       "file_too_large": "Fichier trop volumineux (2 Go max) : {name}",
@@ -388,6 +437,8 @@
       "ui.asr_missing": " · Parakeet not installed (./run.sh --asr)",
       "ui.mode_file": "File",
       "ui.mode_folder": "Folder (recursive)",
+      "ui.mode_ytdlp": "YouTube",
+      "ui.ytdlp_missing": "yt-dlp is not installed — run ./run.sh, then restart the server",
       "ui.drop_file_title": "Drop an audio or video file here",
       "ui.drop_file_hint": "or click to browse — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…",
       "ui.drop_folder_title": "Drop a folder here (subfolders included)",
@@ -399,6 +450,18 @@
       "ui.drop_folder_size": "{size} — click or drop another folder to replace",
       "ui.drop_folder_size_dir": "{size} — {dirs} — click or drop another folder to replace",
       "ui.drop_subfolders": "{n} subfolder(s)",
+      "ui.opt_url_empty": "Paste a video or playlist URL",
+      "ui.opt_url_placeholder": "https://www.youtube.com/watch?v=…",
+      "ui.opt_url_selected": "Video URL: {name}",
+      "ui.opt_url_help": "— any site yt-dlp supports. The file is downloaded, then enhanced like an upload.",
+      "ui.opt_out_format": "Output format",
+      "ui.opt_ytdlp_mp4": "MP4 (enhanced audio + video)",
+      "ui.opt_ytdlp_mp3": "MP3 (audio only — the video is dropped)",
+      "ui.opt_subtitles": "Download the site's subtitles",
+      "ui.opt_subtitles_desc": "— they replace the Parakeet transcription (the cleaned audio is not transcribed)",
+      "ui.opt_subtitle_lang": "Subtitle language",
+      "ui.opt_sub_fr": "French",
+      "ui.opt_sub_en": "English",
       "ui.opt_input_sr": "Input resolution",
       "ui.opt_sr_auto": "Automatic — 16 kHz (recommended)",
       "ui.opt_sr_8k": "8 kHz (heavily degraded source)",
@@ -412,6 +475,7 @@
       "ui.opt_transcribe": "Transcribe the cleaned audio",
       "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
+      "ui.opt_transcribe_subs": "— unavailable: the site's subtitles replace the Parakeet transcription",
       "ui.go": "Enhance audio",
       "ui.go_n": "Enhance audio — {n} file(s)",
       "ui.cancel": "Cancel processing",
@@ -420,6 +484,7 @@
       "ui.again": "Process another file",
       "ui.stage_uploading": "Uploading file…",
       "ui.stage_uploading_folder": "Uploading folder ({n} files)…",
+      "ui.stage_resolving": "Reading the video or playlist…",
       "ui.stage_queued_n": "Queued — {n} job(s) ahead…",
       "ui.stage_queued_next": "Queued — next job…",
       "ui.res_video": "Video with enhanced audio",
@@ -444,11 +509,13 @@
       "ui.link_mp4": "MP4",
       "ui.link_transcript": "Transcript",
       "ui.link_srt": "Subtitles",
+      "ui.link_subtitle": "Subtitles (site)",
       "ui.dl_mp3": "Download audio (MP3 192 kbit/s)",
       "ui.dl_video": "Download video (MP4)",
       "ui.dl_wav": "Download audio (WAV 48 kHz)",
       "ui.dl_transcript": "Download transcript (TXT)",
       "ui.dl_srt": "Download subtitles (SRT)",
+      "ui.dl_subtitle": "Download the site's subtitles (SRT)",
       "ui.dl_original": "Download original audio (WAV)",
       "ui.dl_zip": "Download everything (ZIP)",
       "ui.note_audio": "The audio is delivered at 48 kHz mono, with the bandwidth extended by LavaSR v2. Downloadable as MP3 (192 kbit/s) or WAV (48 kHz, uncompressed).",
@@ -456,6 +523,7 @@
       "ui.note_folder_mp3": "Each audio file is exported as MP3 (192 kbit/s); ",
       "ui.note_folder_wav": "Each audio file is exported as WAV 48 kHz (uncompressed); ",
       "ui.note_folder_tail": "bandwidth extended by LavaSR v2 (48 kHz mono). For videos, the video track is kept as is and the audio replaced (MP4, AAC 192 kbit/s).",
+      "ui.note_ytdlp": "Downloaded with yt-dlp: the subtitles are the site's own, as they are (never muxed into the MP4).",
       "ui.transcript_empty": "(empty)",
       "ui.transcript_unavailable": "(unavailable)",
       "ui.err_job_gone": "Job not found (server restarted?)",
@@ -478,6 +546,8 @@
       "ui.asr_missing": " · Parakeet non installé (./run.sh --asr)",
       "ui.mode_file": "Fichier",
       "ui.mode_folder": "Dossier (récursif)",
+      "ui.mode_ytdlp": "YouTube",
+      "ui.ytdlp_missing": "yt-dlp n'est pas installé — lancez ./run.sh puis redémarrez le serveur",
       "ui.drop_file_title": "Glissez un fichier audio ou vidéo ici",
       "ui.drop_file_hint": "ou cliquez pour parcourir — mp3, wav, flac, ogg, m4a, mp4, mkv, webm, mov…",
       "ui.drop_folder_title": "Glissez un dossier ici (sous-dossiers inclus)",
@@ -489,6 +559,18 @@
       "ui.drop_folder_size": "{size} — cliquez ou glissez un autre dossier pour remplacer",
       "ui.drop_folder_size_dir": "{size} — {dirs} — cliquez ou glissez un autre dossier pour remplacer",
       "ui.drop_subfolders": "{n} sous-dossier(s)",
+      "ui.opt_url_empty": "Collez l'URL d'une vidéo ou d'une playlist",
+      "ui.opt_url_placeholder": "https://www.youtube.com/watch?v=…",
+      "ui.opt_url_selected": "URL de la vidéo : {name}",
+      "ui.opt_url_help": "— n'importe quel site pris en charge par yt-dlp. Le fichier est téléchargé, puis amélioré comme un envoi.",
+      "ui.opt_out_format": "Format de sortie",
+      "ui.opt_ytdlp_mp4": "MP4 (audio amélioré + vidéo)",
+      "ui.opt_ytdlp_mp3": "MP3 (audio seul — la vidéo est abandonnée)",
+      "ui.opt_subtitles": "Télécharger les sous-titres du site",
+      "ui.opt_subtitles_desc": "— ils remplacent la transcription Parakeet (l'audio nettoyé n'est pas transcrit)",
+      "ui.opt_subtitle_lang": "Langue des sous-titres",
+      "ui.opt_sub_fr": "Français",
+      "ui.opt_sub_en": "Anglais",
       "ui.opt_input_sr": "Résolution d'entrée",
       "ui.opt_sr_auto": "Automatique — 16 kHz (recommandé)",
       "ui.opt_sr_8k": "8 kHz (source très dégradée)",
@@ -502,6 +584,7 @@
       "ui.opt_transcribe": "Transcrire l'audio nettoyé",
       "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
+      "ui.opt_transcribe_subs": "— indisponible : les sous-titres du site remplacent la transcription Parakeet",
       "ui.go": "Améliorer l'audio",
       "ui.go_n": "Améliorer l'audio — {n} fichier(s)",
       "ui.cancel": "Annuler le traitement",
@@ -510,6 +593,7 @@
       "ui.again": "Traiter un autre fichier",
       "ui.stage_uploading": "Envoi du fichier…",
       "ui.stage_uploading_folder": "Envoi du dossier ({n} fichiers)…",
+      "ui.stage_resolving": "Lecture de la vidéo ou de la playlist…",
       "ui.stage_queued_n": "En file d'attente — {n} traitement(s) avant celui-ci…",
       "ui.stage_queued_next": "En file d'attente — prochain traitement…",
       "ui.res_video": "Vidéo avec audio amélioré",
@@ -534,11 +618,13 @@
       "ui.link_mp4": "MP4",
       "ui.link_transcript": "Transcription",
       "ui.link_srt": "Sous-titres",
+      "ui.link_subtitle": "Sous-titres (site)",
       "ui.dl_mp3": "Télécharger l'audio (MP3 192 kbit/s)",
       "ui.dl_video": "Télécharger la vidéo (MP4)",
       "ui.dl_wav": "Télécharger l'audio (WAV 48 kHz)",
       "ui.dl_transcript": "Télécharger la transcription (TXT)",
       "ui.dl_srt": "Télécharger les sous-titres (SRT)",
+      "ui.dl_subtitle": "Télécharger les sous-titres du site (SRT)",
       "ui.dl_original": "Télécharger l'audio d'origine (WAV)",
       "ui.dl_zip": "Télécharger tout (ZIP)",
       "ui.note_audio": "L'audio est restitué en 48 kHz mono, bande passante étendue par le modèle LavaSR v2. Téléchargeable en MP3 (192 kbit/s) ou en WAV (48 kHz, non compressé).",
@@ -546,6 +632,7 @@
       "ui.note_folder_mp3": "Chaque fichier audio est exporté en MP3 (192 kbit/s) ; ",
       "ui.note_folder_wav": "Chaque fichier audio est exporté en WAV 48 kHz (non compressé) ; ",
       "ui.note_folder_tail": "bande passante étendue par LavaSR v2 (48 kHz mono). Pour les vidéos, la piste vidéo est conservée telle quelle et l'audio remplacé (MP4, AAC 192 kbit/s).",
+      "ui.note_ytdlp": "Téléchargé avec yt-dlp : les sous-titres sont ceux du site, tels quels (jamais incrustés dans le MP4).",
       "ui.transcript_empty": "(vide)",
       "ui.transcript_unavailable": "(indisponible)",
       "ui.err_job_gone": "Job introuvable (serveur redémarré ?)",
@@ -680,6 +767,7 @@ function applyLang(next) {
   paintSelection();
   paintCancel();
   paintTranscribeRow();
+  paintYtdlpRow();
   paintBadge();
   if (currentStage) $("stageText").textContent = stageText(currentStage);
 }
@@ -711,9 +799,29 @@ function fmtSize(b) {
 // ------------------------------------------------------------------ dépôt
 /* Un seul endroit écrit le libellé du dépôt et celui du bouton : changer de
    langue n'a plus qu'à le rappeler. */
+/* Nom lisible d'une URL : son hôte, la chaîne entière si elle est illisible
+   (elle peut porter une signature : jamais plus de 80 caractères affichés). */
+function urlLabel(raw) {
+  try {
+    return new URL(raw).hostname || raw.slice(0, 80);
+  } catch (_) {
+    return raw.slice(0, 80);
+  }
+}
+
 function paintSelection() {
   const n = currentFiles.length;
   const folder = mode === "folder";
+  if (mode === "ytdlp") {
+    // le libellé vit dans le bloc URL (le dépôt est masqué dans ce mode)
+    const raw = $("url").value.trim();
+    bind($("urlTitle"), () => raw
+      ? t("ui.opt_url_selected", { name: urlLabel(raw) })
+      : t("ui.opt_url_empty"));
+    go.disabled = raw === "";
+    go.textContent = t("ui.go");
+    return;
+  }
   if (folder && n) {
     const total = currentFiles.reduce((s, x) => s + x.file.size, 0);
     const dirs = new Set(
@@ -759,17 +867,40 @@ function setMode(m) {
   mode = m;
   $("modeFile").classList.toggle("active", m === "file");
   $("modeFolder").classList.toggle("active", m === "folder");
-  $("formatOpt").classList.toggle("hidden", m === "file");
+  $("modeYtdlp").classList.toggle("active", m === "ytdlp");
+  $("formatOpt").classList.toggle("hidden", m !== "folder");
   currentFile = null;
   currentFiles = [];
   fileInput.value = "";
   folderInput.value = "";
+  paintYtdlpRow();
   paintSelection();
   $("errorBox").style.display = "none";
 }
 
+/* Le mode YouTube remplace la zone de dépôt par un champ URL, ajoute les deux
+   options qui lui sont propres (format, langue des sous-titres) et fait mieux
+   cohabiter les deux raisons de désactiver la transcription (NeMo absent /
+   sous-titres du site). */
+function paintYtdlpRow() {
+  const ytd = mode === "ytdlp";
+  $("ytdlpBlock").classList.toggle("hidden", !ytd);
+  $("drop").classList.toggle("hidden", ytd);
+  $("subtitlesRow").classList.toggle("hidden", !ytd);
+  $("ytdlpFormatOpt").classList.toggle("hidden", !ytd);
+  $("subtitleLangOpt").classList.toggle("hidden", !ytd);
+  $("url").placeholder = t("ui.opt_url_placeholder");
+  // le champ est verrouillé pendant qu'un traitement tourne
+  $("url").disabled = pollTimer !== null;
+  $("subtitleLang").disabled = !ytd || !$("subtitles").checked;
+  paintTranscribeRow();
+}
+
 $("modeFile").addEventListener("click", () => setMode("file"));
 $("modeFolder").addEventListener("click", () => setMode("folder"));
+$("modeYtdlp").addEventListener("click", () => setMode("ytdlp"));
+$("url").addEventListener("input", () => { paintSelection(); });
+$("subtitles").addEventListener("change", () => { paintYtdlpRow(); });
 
 drop.addEventListener("click", () => (mode === "folder" ? folderInput : fileInput).click());
 fileInput.addEventListener("change", (e) => {
@@ -846,6 +977,7 @@ function stopPolling() {
   pollTimer = null;
   currentStage = null;
   $("progressActions").classList.add("hidden");
+  paintYtdlpRow();   // libère le champ URL
 }
 
 async function poll() {
@@ -1058,6 +1190,7 @@ function renderResults(job) {
   links.push(["enhanced_wav", "ui.dl_wav", true]);
   if (job.artifacts && job.artifacts.transcript) links.push(["transcript", "ui.dl_transcript", true]);
   if (job.artifacts && job.artifacts.transcript_srt) links.push(["transcript_srt", "ui.dl_srt", true]);
+  if (job.artifacts && job.artifacts.subtitle) links.push(["subtitle", "ui.dl_subtitle", true]);
   links.push(["original_wav", "ui.dl_original", false]);
   for (const [name, key, primary] of links) {
     const a = document.createElement("a");
@@ -1068,7 +1201,12 @@ function renderResults(job) {
     T(a, key);
   }
 
-  T($("note"), isVideo ? "ui.note_video" : "ui.note_audio");
+  const noteKey = isVideo ? "ui.note_video" : "ui.note_audio";
+  if (job.source === "ytdlp") {
+    bind($("note"), () => t(noteKey) + " " + t("ui.note_ytdlp"));
+  } else {
+    T($("note"), noteKey);
+  }
 
   $("results").scrollIntoView({ behavior: "smooth" });
 }
@@ -1138,6 +1276,8 @@ function renderFolderResults(job, btns) {
         mk(fileUrlAt(i, "transcript"), "ui.link_transcript");
       if (f.artifacts && f.artifacts.transcript_srt)
         mk(fileUrlAt(i, "transcript_srt"), "ui.link_srt");
+      if (f.artifacts && f.artifacts.subtitle)
+        mk(fileUrlAt(i, "subtitle"), "ui.link_subtitle");
       row.appendChild(links);
     } else if (f.state === "error" && f.error) {
       const err = document.createElement("span");
@@ -1157,40 +1297,53 @@ function renderFolderResults(job, btns) {
     T(a, "ui.dl_zip");
   }
 
-  // la note est composée de deux morceaux selon le format : `bind` (et non `T`)
-  // pour que le changement de langue la reconstruise
-  bind($("note"), () => t(fmt === "mp3" ? "ui.note_folder_mp3" : "ui.note_folder_wav")
-    + t("ui.note_folder_tail"));
+// la note est composée de deux morceaux selon le format : `bind` (et non `T`)
+// pour que le changement de langue la reconstruise
+bind($("note"), () => t(fmt === "mp3" ? "ui.note_folder_mp3" : "ui.note_folder_wav")
+    + t("ui.note_folder_tail")
+    + (job.source === "ytdlp" ? " " + t("ui.note_ytdlp") : ""));
 
   $("results").scrollIntoView({ behavior: "smooth" });
 }
 
 go.addEventListener("click", async () => {
   const isFolder = mode === "folder";
-  if (isFolder ? !currentFiles.length : !currentFile) return;
+  const isYtdlp = mode === "ytdlp";
+  if (isYtdlp ? !$("url").value.trim() : isFolder ? !currentFiles.length : !currentFile) return;
   go.disabled = true;
   $("errorBox").style.display = "none";
   $("results").style.display = "none";
-  showProgress(isFolder
-    ? { key: "ui.stage_uploading_folder", args: { n: currentFiles.length } }
-    : { key: "ui.stage_uploading" }, 0.03);
+  showProgress(isYtdlp ? { key: "ui.stage_resolving" }
+              : isFolder ? { key: "ui.stage_uploading_folder", args: { n: currentFiles.length } }
+              : { key: "ui.stage_uploading" }, 0.03);
 
   const fd = new FormData();
   fd.append("denoise", $("denoise").checked ? "true" : "false");
-  fd.append("transcribe", $("transcribe").checked ? "true" : "false");
   fd.append("input_sr", $("inputSr").value);
   const cutoff = $("cutoff").value.trim();
   if (cutoff) fd.append("cutoff", cutoff);
-  if (isFolder) {
-    fd.append("output_format", $("outFormat").value);
-    for (const { file, rel } of currentFiles) fd.append("files", file, rel);
+  let endpoint;
+  if (isYtdlp) {
+    // pas de `transcribe` : les sous-titres du site remplacent Parakeet, l'API
+    // n'a pas ce paramètre (cf. POST /api/download)
+    fd.append("url", $("url").value.trim());
+    fd.append("fmt", $("ytdlpFormat").value);
+    fd.append("subtitles", $("subtitles").checked ? "true" : "false");
+    fd.append("subtitle_lang", $("subtitleLang").value);
+    endpoint = "/api/download";
   } else {
-    fd.append("file", currentFile);
+    fd.append("transcribe", $("transcribe").checked ? "true" : "false");
+    if (isFolder) {
+      fd.append("output_format", $("outFormat").value);
+      for (const { file, rel } of currentFiles) fd.append("files", file, rel);
+    } else {
+      fd.append("file", currentFile);
+    }
+    endpoint = isFolder ? "/api/enhance_folder" : "/api/enhance";
   }
-  const url = isFolder ? "/api/enhance_folder" : "/api/enhance";
 
   try {
-    const r = await fetch(url, { method: "POST", body: fd });
+    const r = await fetch(endpoint, { method: "POST", body: fd });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       showError(d.code, d.params, d.detail);
@@ -1206,6 +1359,7 @@ go.addEventListener("click", async () => {
       showProgress({ key: "ui.stage_queued_n", args: { n: data.queue_position } }, 0);
     }
     pollTimer = setInterval(poll, 800);
+    paintYtdlpRow();          // verrouille le champ URL pendant le traitement
   } catch (e) {
     showError(null, null, e.message);
   }
@@ -1246,12 +1400,22 @@ $("again").addEventListener("click", () => {
 // Idempotent : ne touche jamais à `.checked` quand la transcription est
 // disponible, pour ne pas décocher ce que l'utilisateur vient de cocher ; quand
 // elle ne l'est pas, on décoche (sinon on enverrait transcribe=true).
+// Deux raisons peuvent la désactiver, et elles ne doivent pas se marcher
+// dessus : NeMo absent (`asrMissing`) et sous-titres du site cochés.
 let asrMissing = false;
 
+function subtitlesOn() {
+  return mode === "ytdlp" && $("subtitles").checked;
+}
+
 function paintTranscribeRow() {
-  $("transcribe").disabled = asrMissing;
-  $("transcribeRow").classList.toggle("off", asrMissing);
-  $("transcribeDesc").textContent = t(asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
+  const subs = subtitlesOn();
+  const off = asrMissing || subs;
+  $("transcribe").disabled = off;
+  if (off) $("transcribe").checked = false;
+  $("transcribeRow").classList.toggle("off", off);
+  $("transcribeDesc").textContent = t(subs ? "ui.opt_transcribe_subs"
+    : asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
 }
 
 function setTranscribeEnabled(on) {
@@ -1289,6 +1453,13 @@ function paintBadge() {
     b.textContent = t("ui.badge_loading")
       + (s.status === "idle" ? "" : t("ui.badge_first_run")) + asr;
   }
+  // .available: false côté downloader = yt-dlp absent : l'onglet YouTube est
+  // désactivé avec la commande à lancer, comme la case de transcription
+  const dl = s.downloader || {};
+  const ytdMissing = dl.available === false;
+  $("modeYtdlp").disabled = ytdMissing;
+  $("modeYtdlp").title = ytdMissing ? t("ui.ytdlp_missing") : "";
+  if (ytdMissing && mode === "ytdlp") setMode("file");
   paintTranscribeRow();
 }
 

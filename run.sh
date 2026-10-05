@@ -44,7 +44,7 @@ if [ ! -d .venv ]; then
   uv venv .venv
   uv pip install -q \
     "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" \
-    fastapi "uvicorn[standard]" python-multipart
+    fastapi "uvicorn[standard]" python-multipart yt-dlp
   if [ "$WITH_ASR" = "1" ]; then
     echo "Adding nemo_toolkit[asr] for transcription (slower)…"
     uv pip install -q "nemo_toolkit[asr]"

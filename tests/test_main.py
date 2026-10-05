@@ -6,8 +6,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app import main as m
+from app.cancel import JobCancelled
 
 
 @pytest.fixture
@@ -468,9 +470,15 @@ def test_delete_job_inconnu(data_dir):
 
 def test_downloads_couvre_les_artefacts():
     for name in ("original_wav", "enhanced_wav", "enhanced_mp3", "video",
-                 "transcript", "transcript_srt"):
+                 "transcript", "transcript_srt", "subtitle"):
         assert name in m.DOWNLOADS
         assert m.DOWNLOADS[name][0].format(stem="x")
+
+
+def test_sous_titre_telecharge_en_srt():
+    """Le sous-titre de yt-dlp est servi en .srt, comme celui de Parakeet."""
+    assert m.DOWNLOADS["subtitle"] == ("{stem}.srt", "application/x-subrip")
+    assert m.DOWNLOADS["subtitle"][0].format(stem="Ma video") == "Ma video.srt"
 
 
 def test_status_expose_file_et_retenue(data_dir):
@@ -737,3 +745,433 @@ def test_reponse_d_erreur_parametree():
     r = TestClient(m.app).get("/api/jobs/inexistant/file/enhanced_wav")
     assert r.status_code == 404
     assert r.json()["code"] == "file_not_found"
+
+
+# ------------------------------------------------------------- yt-dlp (download)
+
+VIDEO_URL = "https://www.example.com/watch?v=abc"
+
+
+@pytest.fixture
+def no_dns(monkeypatch):
+    """Aucun test ne résout un nom de domaine : la résolution est simulée."""
+    monkeypatch.setattr(m, "_host_addresses", lambda host: [])
+
+
+@pytest.fixture
+def yt_ready(monkeypatch):
+    """yt-dlp « installé » et une résolution d'un seul élément."""
+    from app import downloader
+
+    monkeypatch.setattr(downloader, "is_available", lambda: True)
+    monkeypatch.setattr(downloader, "resolve",
+                        lambda url: [{"id": "v1", "title": "Ma video",
+                                      "duration": 30.0}])
+    return downloader
+
+
+def _post(**data):
+    from fastapi.testclient import TestClient
+
+    return TestClient(m.app).post("/api/download", data=data)
+
+
+def _code(reponse):
+    """Le code traduisible de la réponse (jamais une 500 sans corps)."""
+    assert 400 <= reponse.status_code < 500, reponse.text
+    body = reponse.json()
+    assert body.get("code"), body
+    return body["code"]
+
+
+# --------------------------------------------------------------- URL (SSRF)
+
+def test_url_invalide_refusee_avant_tout_appel(data_dir, no_dns, yt_ready):
+    for mauvais in ("", "   ", "pas une url", "file:///etc/passwd",
+                    "ftp://example.com/x", "javascript:alert(1)"):
+        with pytest.raises(HTTPException) as exc:
+            m._check_url(mauvais)
+        assert exc.value.status_code == 400
+        assert exc.value.code == "bad_url"
+
+
+def test_url_privee_refusee(data_dir):
+    """SSRF : le serveur ne doit jamais aller chercher une adresse interne."""
+    for prive in ("http://127.0.0.1:8787/api/status",
+                  "http://[::1]:8787/", "http://192.168.1.10/x",
+                  "http://169.254.169.254/latest/meta-data",
+                  "http://10.0.0.5/x", "http://0.0.0.0/"):
+        with pytest.raises(HTTPException) as exc:
+            m._check_url(prive)
+        assert exc.value.status_code == 400, prive
+        assert exc.value.code == "blocked_url", prive
+
+
+def test_url_privee_refusee_apres_resolution(data_dir, monkeypatch):
+    """Un nom public qui résout vers une adresse interne est refusé aussi."""
+    import ipaddress
+
+    monkeypatch.setattr(m, "_host_addresses",
+                        lambda host: [ipaddress.ip_address("10.1.2.3")])
+    with pytest.raises(HTTPException) as exc:
+        m._check_url("https://interne.example.com/secret")
+    assert exc.value.code == "blocked_url"
+
+
+def test_url_publique_acceptee(data_dir, monkeypatch):
+    import ipaddress
+
+    monkeypatch.setattr(m, "_host_addresses",
+                        lambda host: [ipaddress.ip_address("93.184.216.34")])
+    m._check_url(VIDEO_URL)      # ne lève rien
+
+
+def test_format_de_telechargement_refuse(data_dir):
+    with pytest.raises(HTTPException) as exc:
+        m._check_download_fmt("avi")
+    assert exc.value.status_code == 400
+    assert exc.value.code == "bad_download_format"
+    m._check_download_fmt("mp3")
+    m._check_download_fmt("mp4")
+
+
+# -------------------------------------------------------------- POST /api/download
+
+def test_api_download_refuse_si_ytdlp_absent(data_dir, no_dns, monkeypatch):
+    monkeypatch.setattr(m.downloader, "is_available", lambda: False)
+    assert _code(_post(url=VIDEO_URL)) == "ytdlp_unavailable"
+
+
+def test_api_download_refuse_un_format_inconnu(data_dir, no_dns, yt_ready):
+    assert _code(_post(url=VIDEO_URL, fmt="avi")) == "bad_download_format"
+
+
+def test_api_download_refuse_une_url_invalide(data_dir, no_dns, yt_ready):
+    assert _code(_post(url="ceci n'est pas une url")) == "bad_url"
+    assert _code(_post(url="file:///etc/passwd")) == "bad_url"
+    assert _code(_post(url="   ")) == "bad_url"
+
+
+def test_api_download_refuse_une_url_privee(data_dir, yt_ready):
+    assert _code(_post(url="http://127.0.0.1:8787/")) == "blocked_url"
+
+
+def test_api_download_refuse_une_playlist_trop_grande(data_dir, no_dns,
+                                                     monkeypatch, yt_ready):
+    monkeypatch.setattr(m, "MAX_FOLDER_FILES", 2)
+    monkeypatch.setattr(m.downloader, "resolve", lambda url: [
+        {"id": f"v{i}", "title": f"Video {i}"} for i in range(3)])
+    reponse = _post(url=VIDEO_URL)
+    assert reponse.status_code == 413
+    assert reponse.json()["code"] == "playlist_too_large"
+    assert reponse.json()["params"]["entries"] == 3
+    assert reponse.json()["params"]["max"] == 2
+
+
+def test_api_download_refuse_un_volume_trop_gros(data_dir, no_dns,
+                                                 monkeypatch, yt_ready):
+    monkeypatch.setattr(m, "MAX_FOLDER_TOTAL", 100)
+    monkeypatch.setattr(m.downloader, "resolve", lambda url: [
+        {"id": "v1", "title": "Geante", "filesize": 5_000_000_000}])
+    reponse = _post(url=VIDEO_URL)
+    assert reponse.status_code == 413
+    assert reponse.json()["code"] == "download_too_large"
+
+
+def test_api_download_rend_le_poste_et_le_nombre_d_entrees(data_dir, no_dns,
+                                                           small_queue, yt_ready):
+    reponse = _post(url=VIDEO_URL)
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert set(corps) == {"job_id", "queue_position", "entries"}
+    assert corps["entries"] == 1
+    assert corps["queue_position"] == 0
+    job = m.JOBS[corps["job_id"]]
+    assert job["source"] == "ytdlp"
+    assert job["filename"] == "Ma video"
+    assert job["stem"] == "Ma video"
+    # rien n'est écrit sur le disque avant que le worker ne démarre
+    assert list(data_dir.iterdir()) == []
+
+
+def test_api_download_ignore_transcribe(data_dir, no_dns, yt_ready):
+    """Les sous-titres du site remplacent Parakeet : le paramètre n'existe pas."""
+    schema = m.app.openapi()
+    corps = schema["paths"]["/api/download"]["post"]["requestBody"]
+    ref = corps["content"]["application/x-www-form-urlencoded"]["schema"]["$ref"]
+    props = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]["properties"]
+    assert {"url", "fmt", "subtitles", "subtitle_lang", "denoise",
+            "input_sr", "cutoff"} <= set(props)
+    assert "transcribe" not in props
+
+
+def test_plan_sanitise_les_titres_et_suffixe_les_doublons(data_dir):
+    """Deux vidéos de même titre ne doivent pas partager un nom de téléchargement."""
+    plan = m._download_plan([
+        {"id": "a", "title": "Concert/2024 (live)"},
+        {"id": "b", "title": "Concert/2024 (live)"},
+        {"id": "c", "title": ""},
+    ])
+    stems = [e["stem"] for e in plan]
+    assert stems[0] == "Concert_2024 _live_"
+    assert stems[1] == "Concert_2024 _live__2"
+    assert len(set(stems)) == 3
+    for e in plan:
+        assert "/" not in e["stem"] and ".." not in e["stem"]
+
+
+# ------------------------------------------------- _run_download_job (worker)
+
+@pytest.fixture
+def fake_download(monkeypatch):
+    """yt-dlp-download(): écrit un fichier source et renvoie un Downloaded.
+
+    `mp3`/`mp4` ne change rien ici : c'est le **choix de format** de yt-dlp qui
+    décide si le fichier contient une piste vidéo, le faux se contente de créer
+    ce que le pipeline attending.
+    """
+    from app.downloader import Downloaded
+
+    calls = []
+
+    def _download(url, dest, fmt="mp4", subtitles=False, subtitle_lang="fr",
+                  on_stage=None, cancel=None, playlist_index=None):
+        calls.append({"url": url, "fmt": fmt, "subtitles": subtitles,
+                      "subtitle_lang": subtitle_lang, "cancel": cancel,
+                      "playlist_index": playlist_index, "dest": str(dest)})
+        if on_stage is not None:
+            on_stage(0.5)
+        dest.mkdir(parents=True, exist_ok=True)
+        src = dest / f"source{playlist_index if playlist_index is not None else ''}.m4a"
+        src.write_bytes(b"media")
+        sub = None
+        if subtitles:
+            sub = dest / "source.fr.srt"
+            sub.write_text("1\n00:00:00,000 --> 00:00:01,000\nbonjour\n",
+                           encoding="utf-8")
+        return [Downloaded(title="Ma video", path=src, subtitle=sub,
+                           duration=30.0)]
+
+    monkeypatch.setattr(m.downloader, "download", _download)
+    return calls
+
+
+@pytest.fixture
+def fake_pipeline(monkeypatch):
+    """process_file() sans modèle ni ffmpeg: on ne teste que le job."""
+    seen = {}
+
+    def _process_file(src, outdir, denoise, input_sr, cutoff, on_stage,
+                      output_format="wav", transcribe=False, cancel=None,
+                      keep_original=True):
+        seen.setdefault("srcs", []).append(Path(src))
+        seen.setdefault("keep", []).append(keep_original)
+        seen.setdefault("transcribe", []).append(transcribe)
+        out = Path(outdir)
+        out.mkdir(parents=True, exist_ok=True)
+        on_stage("Test…", 0.5)
+        wav = out / "x_enhanced.wav"
+        wav.write_bytes(b"wav")
+        mp3 = out / "x_pyclean-audio.mp3"
+        mp3.write_bytes(b"mp3")
+        original = out / "x_original.wav"
+        if keep_original:
+            original.write_bytes(b"wav")
+        video = None
+        if seen.get("with_video"):
+            video = out / "x_pyclean-audio.mp4"
+            video.write_bytes(b"mp4")
+        return {"kind": "video" if video else "audio",
+                "original_wav": str(original) if keep_original else None,
+                "enhanced_wav": str(wav), "enhanced_mp3": str(mp3),
+                "transcript": None, "transcript_srt": None, "duration": 30.0,
+                "output": str(video) if video else None}
+
+    monkeypatch.setattr(m, "process_file", _process_file)
+    return seen
+
+
+def _download_job(data_dir, job_id, entries, **fields):
+    job = _register(data_dir, job_id, state="queued", **fields)
+    plan = {"url": VIDEO_URL, "fmt": "mp4", "subtitles": False,
+            "subtitle_lang": "fr", "entries": entries}
+    return job, plan
+
+
+def test_run_download_job_video_unique(data_dir, harness, fake_download,
+                                       fake_pipeline):
+    """Une vidéo : la forme « fichier unique », A/B comprise."""
+    job, plan = _download_job(
+        data_dir, "d1", [{"id": "v1", "title": "Ma video", "stem": "Ma video"}],
+        kind=None, source="ytdlp", stem="Ma video", filename="Ma video",
+        artifacts={})
+    m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                          job["_cancel"]))
+    harness[1]()
+
+    assert wait_state(job, ("done", "error")), job.get("error")
+    assert job["state"] == "done"
+    assert job["kind"] == "audio"
+    # l'original est gardé (A/B), la transcription n'est jamais demandée
+    assert fake_pipeline["keep"] == [True]
+    assert fake_pipeline["transcribe"] == [False]
+    assert "original_wav" in job["artifacts"]
+    assert job["artifacts"]["enhanced_mp3"].endswith(".mp3")
+    assert job["progress"] == 1.0
+    assert fake_download[0]["playlist_index"] is None
+
+
+def test_run_download_job_expose_le_sous_titre(data_dir, harness, fake_download,
+                                               fake_pipeline):
+    job, plan = _download_job(
+        data_dir, "d2", [{"id": "v1", "title": "Ma video", "stem": "Ma video"}],
+        kind=None, source="ytdlp", stem="Ma video", filename="Ma video",
+        artifacts={})
+    plan["subtitles"] = True
+    m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                          job["_cancel"]))
+    harness[1]()
+
+    assert wait_state(job, ("done", "error")), job.get("error")
+    assert job["artifacts"]["subtitle"].endswith(".srt")
+    # jamais de transcription Parakeet à côté
+    assert "transcript" not in job["artifacts"]
+    assert "transcript_srt" not in job["artifacts"]
+    assert fake_download[0]["subtitles"] is True
+
+
+def test_run_download_job_mp3_ne_produit_pas_de_video(data_dir, harness,
+                                                      fake_download, fake_pipeline):
+    """Mode MP3 : `bestaudio` ne fournit aucune piste vidéo, donc aucun
+    artefact vidéo n'est produit (le faux pipeline le vérifie via `with_video`)."""
+    job, plan = _download_job(
+        data_dir, "d3", [{"id": "v1", "title": "Ma video", "stem": "Ma video"}],
+        kind=None, source="ytdlp", stem="Ma video", filename="Ma video",
+        artifacts={})
+    plan["fmt"] = "mp3"
+    m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                          job["_cancel"]))
+    harness[1]()
+
+    assert wait_state(job, ("done", "error")), job.get("error")
+    assert fake_download[0]["fmt"] == "mp3"
+    assert "video" not in job["artifacts"]
+    assert job["kind"] == "audio"
+
+
+def test_run_download_job_playlist_devient_un_dossier(data_dir, harness,
+                                                      fake_download,
+                                                      fake_pipeline):
+    entries = [{"index": i, "relpath": f"Video {i}", "stem": f"Video_{i}",
+                "state": "queued", "stage": "", "stage_key": None,
+                "stage_args": {}, "progress": 0.0, "error": None,
+                "error_code": None, "error_params": {}, "kind": None,
+                "artifacts": {}} for i in range(2)]
+    job, plan = _download_job(data_dir, "d4",
+                              [{"id": f"v{i}", "title": f"Video {i}",
+                                "stem": f"Video_{i}"} for i in range(2)],
+                              kind="folder", source="ytdlp", stem=None,
+                              filename="2 files (playlist)", output_format="mp3",
+                              files=entries)
+    plan["subtitles"] = True
+    m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                          job["_cancel"]))
+    harness[1]()
+
+    assert wait_state(job, ("done", "error")), job.get("error")
+    assert job["state"] == "done"
+    assert job["kind"] == "folder"
+    # une entrée de playlist à la fois, et l'original n'est pas gardé
+    assert [c["playlist_index"] for c in fake_download] == [0, 1]
+    assert fake_pipeline["keep"] == [False, False]
+    assert all(ent["state"] == "done" for ent in entries)
+    assert all(ent["artifacts"]["subtitle"].endswith(".srt") for ent in entries)
+    assert job["zip"]
+    with zipfile.ZipFile(job["zip"]) as zf:
+        names = sorted(zf.namelist())
+    # comme pour un envoi de dossier, le nom dans l'archive suit le titre
+    assert "Video 0_pyclean-audio.mp3" in names, names
+    assert "Video 0.srt" in names, names
+    assert "Video 1.srt" in names, names
+    # la source téléchargée est supprimée après le traitement
+    assert not (data_dir / "d4" / "src" / "0").exists()
+    assert not (data_dir / "d4" / "src" / "1").exists()
+
+
+def test_run_download_job_signale_un_echec_par_entree(data_dir, harness,
+                                                       fake_download,
+                                                       fake_pipeline):
+    """Un fichier en échec ne fait pas échouer le dossier entier."""
+    boom = {"n": 0}
+
+    def process(src, outdir, *a, **k):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise RuntimeError("pas de piste audio")
+        out = Path(outdir)
+        out.mkdir(parents=True, exist_ok=True)
+        wav = out / "x_enhanced.wav"
+        wav.write_bytes(b"wav")
+        return {"kind": "audio", "original_wav": None,
+                "enhanced_wav": str(wav), "enhanced_mp3": None,
+                "transcript": None, "transcript_srt": None, "duration": 1.0,
+                "output": None}
+
+    m.process_file = process
+    try:
+        entries = [{"index": i, "relpath": f"Video {i}", "stem": f"Video_{i}",
+                    "state": "queued", "stage": "", "stage_key": None,
+                    "stage_args": {}, "progress": 0.0, "error": None,
+                    "error_code": None, "error_params": {}, "kind": None,
+                    "artifacts": {}} for i in range(2)]
+        job, plan = _download_job(
+            data_dir, "d5",
+            [{"id": f"v{i}", "title": f"Video {i}", "stem": f"Video_{i}"}
+             for i in range(2)],
+            kind="folder", source="ytdlp", stem=None, output_format="mp3",
+            files=entries)
+        m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                              job["_cancel"]))
+        harness[1]()
+
+        assert wait_state(job, ("done", "error")), job.get("error")
+        assert entries[0]["state"] == "error"
+        assert entries[1]["state"] == "done"
+        assert job["state"] == "done"
+    finally:
+        del m.process_file
+
+
+def test_run_download_job_annule_supprime_le_dossier(data_dir, harness,
+                                                     fake_download,
+                                                     fake_pipeline):
+    """Annuler pendant le téléchargement : état « cancelled », dossier purgé."""
+    def annuler(url, dest, *a, on_stage=None, **k):
+        m.cancel_job(job["id"])
+        if on_stage is not None:
+            on_stage(0.5)
+        raise JobCancelled("annulé")
+
+    m.downloader.download = annuler
+    job, plan = _download_job(
+        data_dir, "d6", [{"id": "v1", "title": "Ma video", "stem": "Ma video"}],
+        kind=None, source="ytdlp", stem="Ma video", filename="Ma video",
+        artifacts={})
+    m._enqueue(job, m._run_download_job, (plan, False, 16000, None,
+                                          job["_cancel"]))
+    harness[1]()
+
+    assert wait_state(job, ("cancelled", "done", "error")), job["state"]
+    assert job["state"] == "cancelled"
+    # l'état est écrit avant le rmtree (voir _finish_cancelled)
+    end = time.time() + 5
+    while (data_dir / "d6").exists() and time.time() < end:
+        time.sleep(0.01)
+    assert not (data_dir / "d6").exists()
+
+
+def test_status_expose_le_telechargeur(data_dir):
+    s = m.status()
+    assert isinstance(s["downloader"]["available"], bool)
+    assert s["downloader"]["version"] is None or isinstance(
+        s["downloader"]["version"], str)

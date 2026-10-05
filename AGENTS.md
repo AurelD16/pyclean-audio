@@ -2,14 +2,15 @@
 
 Local web app (FastAPI + single page) that restores the audio of audio/video
 files with LavaSR v2 (`LavaEnhance2`, HF model `YatharthS/LavaSR`). It can also
-transcribe the cleaned audio (Parakeet TDT via NeMo, optional).
+transcribe the cleaned audio (Parakeet TDT via NeMo, optional), and download a
+video or a playlist from any site `yt-dlp` supports to process it the same way.
 
 ## Commands
 
 ```bash
 # environment (once) — this is what run.sh does
 uv venv .venv
-uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi "uvicorn[standard]" python-multipart
+uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi "uvicorn[standard]" python-multipart yt-dlp
 # extra for --transcribe / the "Transcribe" checkbox: ./run.sh --asr
 # (or: uv pip install "nemo_toolkit[asr]", or -r requirements.txt)
 # NeMo is deliberately out of the base install: several Go, and it pins its own
@@ -17,7 +18,7 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # web server (port 8787)
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
-# or: ./run.sh            (creates .venv, installs the 4 base packages)
+# or: ./run.sh            (creates .venv, installs the 5 base packages)
 #     ./run.sh --asr       (idempotent: installs NeMo only if missing)
 #     ./run.sh --help
 # run.sh also honours PORT=9000 and PYCLEAN_WITH_ASR=1 (same as --asr), and
@@ -30,7 +31,7 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # ~209 tests, ~6 s, no model loaded
+.venv/bin/python -m pytest            # ~260 tests, ~10 s, no model, no network
 .venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
 
 # container (see the "Docker" section below)
@@ -107,8 +108,13 @@ English.
   `GET /api/jobs/{id}/file/{original_wav|enhanced_wav|enhanced_mp3|video|transcript|transcript_srt}`,
   `GET /api/jobs/{id}/file/{index}/{...}` (folder job),
   `GET /api/jobs/{id}/zip` (results archive, folder job),
-  `GET /api/status` (LavaSR model state + `transcriber` + `queue` +
-  `retention`). Both endpoints accept `transcribe` (bool, default false), which
+  `POST /api/download` (video or playlist URL: `yt-dlp` downloads it, then the
+  **same pipeline** runs; `fmt` = "mp4" (default) or "mp3" (audio only),
+  `subtitles` + `subtitle_lang` for the **site's** subtitles; deliberately
+  **no `transcribe` parameter** — the subtitles replace it),
+  `GET /api/status` (LavaSR model state + `transcriber` + `downloader` +
+  `queue` + `retention`). Both **upload** endpoints accept `transcribe`
+  (bool, default false), which
   produces a `transcript` artifact (`<stem>_transcript.txt`, with
   `(aucune parole détectée)` when nothing is recognised) and `transcript_srt`
   (`<stem>_pyclean-audio.srt`) **only if the model returned timestamps**; both
@@ -135,6 +141,24 @@ English.
     `data/jobs/` at startup (jobs live in memory, anything else is
     unreachable); `_make_room()` evicts the oldest finished jobs when
     `PYCLEAN_JOB_MAX` is reached, and returns 503 only if everything is active.
+  - **yt-dlp jobs** (`_run_download_job`): the URL's metadata is resolved **in
+    the request handler** (`downloader.resolve()`, metadata only), so a bad URL,
+    a private video or an oversized playlist is a 4xx at submit time. One entry
+    -> the flat single-file shape (`keep_original=True`, A/B kept,
+    `renderResults` unchanged); several -> a **folder job**
+    (`keep_original=False`, per-entry `file_step` progress, source deleted after
+    `process_file`, one ZIP). The download takes the first `FETCH_SHARE` (30 %)
+    of an entry's slice. One `downloader.download()` call **per entry**
+    (`playlist_items`) keeps a long playlist's disk bounded, and the subtitle is
+    moved next to the results before the source folder is deleted.
+    `job["source"] == "ytdlp"` is what the page keys its extra results note on.
+  - **SSRF**: the server fetches a client-supplied URL on a LAN, without
+    authentication. `_check_url()` runs **before** any network call: the scheme
+    must be `{http, https}` and the host (literal, and every address
+    `getaddrinfo` returns) must be public — otherwise `blocked_url`.
+    `_host_addresses()` is the seam the tests patch, so no test resolves a name.
+    The residual risk (a *public* URL redirecting to a private address) is inside
+    yt-dlp and is documented in README's Limitations.
   - **Transcription unavailable**: `_check_transcribe()` returns **400** if
     `transcribe` is requested while NeMo is not installed (`is_available()`),
     instead of accepting a job that would fail mid-flight with
@@ -175,6 +199,24 @@ English.
   to the dictionary of `static/index.html` — with the *same English wording* and
   a French translation — otherwise `tests/test_i18n.py` fails. Keep one
   catalogue per side: English here, English + French on the page.
+- `app/downloader.py` — the `yt-dlp` wrapper, deliberately small:
+  `is_available()` (`find_spec`, like `transcriber.is_available` — never
+  imports), `version()` (**`lru_cache`**: `status()` is polled every 2 s),
+  `resolve(url)` (flat metadata, one dict per entry, no media), `download(url,
+  dest, fmt, subtitles, subtitle_lang, on_stage, cancel, playlist_index=None)`
+  (`on_stage(fraction)` reports the progress, `cancel` is checked on **every**
+  `progress_hook` line — the cancellation checkpoint of this phase) and
+  `stem_for(title, id)` (no path separator, no `..`, ≤ 80 characters, never
+  empty). `yt_dlp` is imported **inside** the functions, so the module imports
+  and the tests run without the package installed. Every failure is a
+  `MediaError("download_failed", detail=…[:300])` — **a set cancel event wins**,
+  so a cancellation never surfaces as a download failure. Options of note:
+  `format` = `bestvideo+bestaudio/best` + `merge_output_format: "mp4"` (mp4) or
+  `bestaudio/ba` (mp3: the fallback stays audio-only, so no video is ever
+  fetched), `max_filesize = MAX_SIZE`, `writesubtitles` + `subtitleslangs` +
+  `FFmpegSubtitlesConvertor` (always `.srt`, **never muxed**), `cachedir: False`
+  and a `_Quiet` logger (yt-dlp must never print on the server's stderr). No
+  cookies, no credentials, no DRM.
 - `app/cancel.py` — `JobCancelled` + `raise_if_cancelled()` (checkpoints between
   blocks, between chunks, on every progress line) and **`GPU_LOCK`**, the global
   lock taken around `enhance_wav` **and** transcription: per-model locks are not
@@ -219,14 +261,19 @@ English.
   error, final recap); `--format wav|mp3` (default: wav); `--transcribe`
   (default: off) adds `<stem>_transcript.txt` and `<stem>_pyclean-audio.srt`.
 - `static/index.html` — **multilingual** UI (English by default, French second)
-  with: drag & drop of a file or a folder (recursive reading via
-  `webkitGetAsEntry` / `webkitdirectory`), **linked** A/B (both players follow
+  with **three sources** — a file, a folder (recursive reading via
+  `webkitGetAsEntry` / `webkitdirectory`) or a video/playlist URL (`#url`, the
+  “YouTube” tab, which hides the drop zone and is disabled when yt-dlp is
+  missing) — and **linked** A/B (both players follow
   each other on play/pause/seek, “▶ Source” / “▶ Enhanced” buttons, “linked”
   checkbox — “▶ Origine” / “▶ Amélioré” in French), “Transcribe the cleaned
   audio” checkbox (off by default, **disabled together with the `./run.sh --asr`
   command when NeMo is missing** — `setTranscribeEnabled()` on the same
-  `available` as the API), queue position, “Cancel processing” button, “Delete
-  results” button, job polling, per-file result list + ZIP download.
+  `available` as the API), a “site subtitles” checkbox + language select in the
+  YouTube mode (`paintYtdlpRow()`, part of the `applyLang` replay; the two
+  reasons to disable transcription — NeMo missing, subtitles checked — must not
+  fight), queue position, “Cancel processing” button, “Delete results” button,
+  job polling, per-file result list + ZIP download.
   - **i18n**: two flags 🇬🇧 / 🇫🇷 **under the LavaSR badge** (`applyLang`).
     Default language `en`, remembered in `localStorage` (`pyclean.lang`);
     `document.documentElement.lang` and `<title>` follow. Translations live in a
@@ -252,9 +299,11 @@ English.
     FastAPI's 422 body (a list of objects) so the error box never shows
     `[object Object]`; `jobStage(job)` is the `{key, args, raw}` triple for a job
     or a folder entry.
-- `tests/` — pytest (no model loaded: `app.enhancer` / `app.transcriber` are
-  replaced by fake modules in `conftest.py`); `ruff check` is the only lint that
-  counts. `tests/test_messages.py` and `tests/test_i18n.py` cover the dictionary
+- `tests/` — pytest (no model loaded, **no network**: `app.enhancer` /
+  `app.transcriber` are replaced by fake modules in `conftest.py`, and
+  `tests/test_ytdlp.py` injects a fake `yt_dlp` into `sys.modules` — the fake
+  needs a `__spec__`, since that is what `find_spec` reads); `ruff check` is the
+  only lint that counts. `tests/test_messages.py` and `tests/test_i18n.py` cover the dictionary
   (server keys present in both languages, no key shadowing across sections, same
   parameter names in both languages, the page's hardcoded English up to date,
   flags located under the badge and in order).
@@ -513,6 +562,17 @@ JOB=$(curl -s -X POST -F "file=@test_8k.wav" -F "transcribe=true" \
   http://127.0.0.1:8787/api/enhance | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 curl -s http://127.0.0.1:8787/api/jobs/$JOB | python3 -m json.tool
 
+# yt-dlp (video or playlist): -F "fmt=mp3" drops the video, "subtitles=true"
+# takes the site's own .srt and replaces the Parakeet transcription. Answer:
+# {"job_id", "queue_position", "entries"} — entries == 1 -> single view.
+JOB=$(curl -s -X POST -F "url=https://www.youtube.com/watch?v=VIDEO_ID" \
+  -F "fmt=mp4" -F "subtitles=true" -F "subtitle_lang=fr" \
+  http://127.0.0.1:8787/api/download | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+curl -s http://127.0.0.1:8787/api/jobs/$JOB          # artifacts (or files[] + zip for a playlist)
+curl -s -o out.srt http://127.0.0.1:8787/api/jobs/$JOB/file/subtitle
+curl -s -o all.zip http://127.0.0.1:8787/api/jobs/$JOB/zip   # playlist: <name>.srt included
+curl -s -X POST -F "url=http://127.0.0.1:8787/" http://127.0.0.1:8787/api/download  # 400 blocked_url (SSRF)
+
 # error paths (now carry a translatable code next to the English detail)
 curl -s -X POST -F "file=@test_8k.wav" -F "input_sr=abc" http://127.0.0.1:8787/api/enhance   # 422
 curl -s http://127.0.0.1:8787/api/jobs/inconnu                                                # 404 + code
@@ -574,3 +634,15 @@ Validity criteria:
   returns timestamps; the `.txt` always exists (possibly with
   `(aucune parole détectée)`). Subtitles are not **muxed** into the MP4: it is
   a separate file to load.
+- **yt-dlp downloads**: the server fetches a **client-supplied URL** on a LAN
+  without authentication. `_check_url()` refuses everything but a public
+  `http(s)` host *before* any request (loopback / private / link-local /
+  reserved / multicast), but a **public URL that redirects to an internal address
+  cannot be intercepted cheaply** and stays inside yt-dlp. yt-dlp is unpinned
+  here (like every dependency) and breaks against some sites from time to time;
+  the error path is a translated `download_failed`, never a traceback. No
+  cookies, no browser cookies, no credentials, no DRM, no geo bypass — and
+  downloading is subject to the site's terms of service and to copyright.
+  Playlist entries are fetched **one at a time** (`playlist_items`), the source
+  is deleted right after `process_file` (the subtitle is moved to the results
+  first): a long playlist does not fill the disk.

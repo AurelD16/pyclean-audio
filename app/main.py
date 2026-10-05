@@ -1,19 +1,23 @@
 import asyncio
 import contextlib
+import ipaddress
 import queue
 import re
 import shutil
+import socket
 import threading
 import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import downloader
 from .cancel import JobCancelled, raise_if_cancelled
 from .config import (
     JOB_MAX,
@@ -49,6 +53,8 @@ ACTIVE_STATES = ("queued", "running")
 # process_file() keys that become downloadable artifacts
 ARTIFACT_KEYS = frozenset({
     "original_wav", "enhanced_wav", "enhanced_mp3", "transcript", "transcript_srt",
+    # the subtitle yt-dlp downloaded (never muxed, always .srt)
+    "subtitle",
 })
 
 
@@ -404,11 +410,167 @@ def _build_folder_zip(job, entries, output_format="mp3"):
             if arts.get("transcript_srt"):
                 zf.write(arts["transcript_srt"], f"{prefix}{stem}.srt")
                 added += 1
+            elif arts.get("subtitle"):
+                # yt-dlp's own subtitle, converted to SRT. Mutually exclusive
+                # with transcript_srt (a download job never transcribes), and
+                # the "elif" keeps one <stem>.srt per entry in the archive.
+                zf.write(arts["subtitle"], f"{prefix}{stem}.srt")
+                added += 1
     if added == 0:
         if zip_path.exists():
             zip_path.unlink()
         return None
     return str(zip_path)
+
+
+# ------------------------------------------------------- téléchargement (yt-dlp)
+
+# Part of an entry's slice the download takes before process_file takes over.
+FETCH_SHARE = 0.3
+
+
+def _run_download_job(job, plan, denoise, input_sr, cutoff, cancel):
+    """Worker of a yt-dlp job: download then process, exactly like an upload.
+
+    One entry → the flat single-file shape (A/B kept, `renderResults` works
+    unchanged). Several → the folder shape: one row per entry, `keep_original`
+    false, the downloaded source deleted right after it fed the model, then the
+    single ZIP.
+    """
+    with JOBS_LOCK:
+        job["state"] = "running"
+    jobdir = DATA / job["id"]
+    try:
+        raise_if_cancelled(cancel)
+        if len(plan["entries"]) == 1:
+            _download_single(job, plan, denoise, input_sr, cutoff, cancel, jobdir)
+        else:
+            _download_playlist(job, plan, denoise, input_sr, cutoff, cancel, jobdir)
+        with JOBS_LOCK:
+            # a failed playlist (no_file_done) keeps its error state
+            if job["state"] == "running":
+                _stage_locked(job, stage_text("done"), 1.0, done=True, key="done")
+    except JobCancelled:
+        _finish_cancelled(job)
+    except Exception as e:
+        with JOBS_LOCK:
+            _fail(job, e)
+
+
+def _fetch(job, ent_index, total, plan, cancel, jobdir, cb_stage):
+    """Download entry `ent_index` (0-based) and report its progress.
+
+    `cb_stage(text, fraction, key, args)` nests the progress in the folder job's
+    "File i/n" line, or writes it directly on a single-file job.
+    """
+    src = jobdir / "src" / str(ent_index)
+    stage = stage_text("fetch")
+    raise_if_cancelled(cancel)
+    got = downloader.download(
+        plan["url"], src, plan["fmt"], plan["subtitles"], plan["subtitle_lang"],
+        on_stage=lambda p: cb_stage(stage, p, "fetch", {}), cancel=cancel,
+        # one call per entry: the source of a playlist is processed (then
+        # deleted) before the next one is fetched, so the disk stays bounded
+        playlist_index=ent_index if total > 1 else None,
+    )
+    return got[0]
+
+
+def _download_single(job, plan, denoise, input_sr, cutoff, cancel, jobdir):
+    outdir = jobdir / "out"
+    got = _fetch(job, 0, 1, plan, cancel, jobdir,
+                 lambda text, p, key, args: _stage(job, text, FETCH_SHARE * p,
+                                                  key=key, args=args))
+    res = process_file(
+        got.path, outdir, denoise, input_sr, cutoff,
+        lambda s, p, k=None, a=None: _stage(
+            job, s, FETCH_SHARE + (1 - FETCH_SHARE) * p, key=k, args=a),
+        output_format="mp3", transcribe=False, cancel=cancel,
+        keep_original=True,   # the A/B comparison needs the source audio
+    )
+    job["kind"] = res["kind"]
+    job["artifacts"] = {k: v for k, v in res.items() if k in ARTIFACT_KEYS and v}
+    if res["output"]:
+        job["artifacts"]["video"] = res["output"]
+    if got.subtitle is not None:
+        job["artifacts"]["subtitle"] = str(got.subtitle)
+
+
+def _download_playlist(job, plan, denoise, input_sr, cutoff, cancel, jobdir):
+    entries = job["files"]
+    total = len(entries)
+    for i, ent in enumerate(entries):
+        outdir = jobdir / "out" / str(i)
+        with JOBS_LOCK:
+            ent["state"] = "running"
+            text, key, args = _file_stage(i + 1, total, ent["relpath"], "", None, None)
+            _stage_locked(job, text, job["progress"], key=key, args=args)
+
+        def nested(text, p, key, args, _i=i, _ent=ent):
+            with JOBS_LOCK:
+                _ent["stage"] = text
+                _ent["stage_key"] = key
+                _ent["stage_args"] = args or {}
+                _ent["progress"] = round(min(max(p, 0.0), 1.0), 3)
+                line, k, sparams = _file_stage(_i + 1, total, _ent["relpath"],
+                                               text, key, args)
+                _stage_locked(job, line,
+                              (_i + FETCH_SHARE * p) / total, key=k, args=sparams)
+
+        def pipeline(s, p, k=None, a=None, _nested=nested, _i=i):
+            _nested(s, FETCH_SHARE + (1 - FETCH_SHARE) * p, k, a)
+
+        try:
+            raise_if_cancelled(cancel)
+            got = _fetch(job, i, total, plan, cancel, jobdir, nested)
+            res = process_file(
+                got.path, outdir, denoise, input_sr, cutoff, pipeline,
+                output_format="mp3", transcribe=False, cancel=cancel,
+                keep_original=False,   # no A/B in folder mode: −43 % of disk
+            )
+            ent["kind"] = res["kind"]
+            ent["artifacts"] = {k: v for k, v in res.items()
+                                if k in ARTIFACT_KEYS and v}
+            if res["output"]:
+                ent["artifacts"]["video"] = res["output"]
+            # the subtitle lives in the source folder, which is deleted below:
+            # it becomes an artifact of the job, next to the other results
+            if got.subtitle is not None:
+                kept = outdir / f"{got.path.stem}.srt"
+                outdir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(got.subtitle), kept)
+                ent["artifacts"]["subtitle"] = str(kept)
+            # the downloaded file only fed the model: free the disk now
+            shutil.rmtree(jobdir / "src" / str(i), ignore_errors=True)
+            with JOBS_LOCK:
+                ent["state"] = "done"
+                ent["stage"] = stage_text("done")
+                ent["stage_key"] = "done"
+                ent["stage_args"] = {}
+                ent["progress"] = 1.0
+        except JobCancelled:
+            _finish_cancelled(job)
+            return
+        except Exception as e:
+            with JOBS_LOCK:
+                _fail(ent, e)
+
+    done = sum(1 for e in entries if e["state"] == "done")
+    zip_path = None
+    if done:
+        try:
+            zip_path = _build_folder_zip(job, entries, "mp3")
+        except Exception:
+            zip_path = None
+    with JOBS_LOCK:
+        if done:
+            _stage_locked(job, stage_text("folder_done", {"done": done, "total": total}),
+                          1.0, done=True, key="folder_done",
+                          args={"done": done, "total": total})
+            if zip_path:
+                job["zip"] = zip_path
+        else:
+            _fail(job, MediaError("no_file_done"))
 
 
 # ------------------------------------------------------------------ application
@@ -457,6 +619,10 @@ async def _api_error_handler(_request, exc: ApiError):
 def status():
     s = get_enhancer().status()
     s["transcriber"] = get_transcriber().status()
+    s["downloader"] = {
+        "available": downloader.is_available(),
+        "version": downloader.version(),
+    }
     s["retention"] = {
         "ttl_s": JOB_TTL,
         "max_jobs": JOB_MAX,
@@ -469,6 +635,94 @@ def status():
 def _check_input_sr(input_sr):
     if input_sr not in (8000, 16000, 24000):
         raise ApiError(400, "bad_input_sr")
+
+
+def _check_download_fmt(fmt: str) -> None:
+    """Output format of a download job: "mp4" (default) or "mp3" (audio only)."""
+    if fmt not in ("mp3", "mp4"):
+        raise ApiError(400, "bad_download_format")
+
+
+def _host_addresses(host: str):
+    """Every IP address a hostname resolves to (empty when it cannot be
+    resolved). A seam for the tests: no test resolves a real name."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return []
+    out = []
+    for *_, sockaddr in infos:
+        try:
+            out.append(ipaddress.ip_address(sockaddr[0]))
+        except ValueError:
+            continue
+    return out
+
+
+def _is_local_ip(ip) -> bool:
+    """Loopback, private, link-local, reserved or multicast: never fetchable."""
+    return (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast)
+
+
+def _check_url(url: str) -> None:
+    """Refuses anything but a public http(s) URL, **before** any network call.
+
+    The server fetches a client-supplied URL on a LAN with no authentication:
+    without this, `http://127.0.0.1:8787/…` or an internal host name would be a
+    server-side request forgery. A *public* URL that redirects to an internal
+    address stays inside yt-dlp (documented in README's Limitations).
+    """
+    raw = (url or "").strip()
+    try:
+        parsed = urlparse(raw)
+        host = parsed.hostname
+    except ValueError:
+        parsed, host = None, None
+    if not raw or parsed is None or parsed.scheme not in ("http", "https") or not host:
+        # the URL itself is echoed (truncated): a URL can carry a token
+        raise ApiError(400, "bad_url", url=raw[:200])
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None and _is_local_ip(literal):
+        raise ApiError(400, "blocked_url")
+    for ip in _host_addresses(host):
+        if _is_local_ip(ip):
+            raise ApiError(400, "blocked_url")
+
+
+def _download_plan(entries: list[dict]):
+    """Sanitised stems for the resolved entries, duplicates suffixed `_2`, `_3`…
+
+    Same rule as a folder upload (two videos of a playlist share a title there),
+    otherwise two entries would answer the same download name.
+    """
+    seen = {}
+    out = []
+    for ent in entries:
+        raw = ent.get("title") or ent.get("id") or "video"
+        stem = downloader.stem_for(raw, str(ent.get("id") or ""))
+        n = seen.get(stem.lower(), 0) + 1
+        seen[stem.lower()] = n
+        if n > 1:
+            stem = f"{stem}_{n}"
+        out.append({"id": ent.get("id"), "title": raw, "stem": stem})
+    return out
+
+
+def _declared_total(entries: list[dict]) -> int:
+    """Total size the site announces (flat metadata often has none: the check is
+    then skipped, `max_filesize` remains the backstop for a single entry)."""
+    total = 0
+    for ent in entries:
+        size = ent.get("filesize") or ent.get("filesize_approx") or 0
+        try:
+            total += int(size)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 def _check_transcribe(transcribe: bool) -> None:
@@ -657,6 +911,105 @@ async def enhance_folder(files: list[UploadFile] = File(...),
     return {"job_id": job_id, "queue_position": pos}
 
 
+@app.post("/api/download")
+async def download_media(url: str = Form(...),
+                         fmt: str = Form("mp4"),
+                         subtitles: bool = Form(False),
+                         subtitle_lang: str = Form("fr"),
+                         denoise: bool = Form(False),
+                         input_sr: int = Form(16000),
+                         cutoff: int = Form(None)):
+    """Download a video or a playlist with yt-dlp, then enhance it exactly like
+    an upload.
+
+    fmt: "mp4" (default, video + enhanced audio) or "mp3" (audio only).
+    subtitles: download the **site's** subtitles (converted to SRT, never muxed).
+    They *replace* the Parakeet transcription, so `transcribe` is deliberately
+    **not** a parameter here: a client that sends it is ignored, and no
+    `transcript`/`transcript_srt` artifact is ever produced.
+    subtitle_lang: any yt-dlp language code (the page offers fr and en).
+    Answers `{"job_id", "queue_position", "entries"}`: `entries == 1` means the
+    single-file result view, more means a folder job with a ZIP.
+    """
+    _check_input_sr(input_sr)
+    _check_download_fmt(fmt)
+    if not downloader.is_available():
+        raise ApiError(400, "ytdlp_unavailable")
+    _check_url(url)
+
+    # Metadata first: a bad URL, a private video or an oversized playlist is a
+    # 4xx now, not a job that dies a few seconds later.
+    try:
+        entries = downloader.resolve(url)
+    except MediaError as e:
+        raise ApiError(400, e.code, **e.params) from e
+    if not entries:
+        raise ApiError(400, "download_failed", detail="no entry found")
+    if len(entries) > MAX_FOLDER_FILES:
+        raise ApiError(413, "playlist_too_large", entries=len(entries),
+                       max=MAX_FOLDER_FILES)
+    total_size = _declared_total(entries)
+    if total_size > MAX_FOLDER_TOTAL:
+        raise ApiError(413, "download_too_large",
+                       gb=MAX_FOLDER_TOTAL // (1024 ** 3))
+    _make_room()
+
+    job_id = uuid.uuid4().hex[:12]
+    plan = {
+        "url": url.strip(),
+        "fmt": fmt,
+        "subtitles": subtitles,
+        "subtitle_lang": subtitle_lang or "fr",
+        "entries": _download_plan(entries),
+    }
+    common = {
+        "id": job_id,
+        "source": "ytdlp",
+        "state": "queued",
+        "stage": stage_text("queued"),
+        "stage_key": "queued",
+        "stage_args": {},
+        "progress": 0.0,
+        "error": None,
+        "error_code": None,
+        "error_params": {},
+        "queue_position": 0,
+    }
+    if len(plan["entries"]) == 1:
+        job = _register({**common,
+                         "kind": None,
+                         "filename": plan["entries"][0]["title"],
+                         "stem": plan["entries"][0]["stem"],
+                         "artifacts": {}})
+    else:
+        files = [{
+            "index": i,
+            "relpath": ent["title"],
+            "stem": ent["stem"],
+            "state": "queued",
+            "stage": stage_text("queued"),
+            "stage_key": "queued",
+            "stage_args": {},
+            "progress": 0.0,
+            "error": None,
+            "error_code": None,
+            "error_params": {},
+            "kind": None,
+            "artifacts": {},
+        } for i, ent in enumerate(plan["entries"])]
+        job = _register({**common,
+                         "kind": "folder",
+                         "filename": f"{len(files)} files (playlist)",
+                         "stem": None,
+                         "output_format": "mp3",
+                         "files": files})
+    # the job folder is created by the worker: a refused submission leaves
+    # nothing behind in data/jobs/
+    pos = _enqueue(job, _run_download_job,
+                   (plan, denoise, input_sr, cutoff, job["_cancel"]))
+    return {"job_id": job_id, "queue_position": pos, "entries": len(plan["entries"])}
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     with JOBS_LOCK:
@@ -700,6 +1053,7 @@ DOWNLOADS = {
     "video": ("{stem}_pyclean-audio.mp4", "video/mp4"),
     "transcript": ("{stem}_transcript.txt", "text/plain"),
     "transcript_srt": ("{stem}_pyclean-audio.srt", "application/x-subrip"),
+    "subtitle": ("{stem}.srt", "application/x-subrip"),
 }
 
 

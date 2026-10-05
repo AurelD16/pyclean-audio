@@ -2,4 +2,5 @@ LavaSR @ git+https://github.com/ysharma3501/LavaSR.git
 fastapi
 uvicorn[standard]
 python-multipart
+yt-dlp
 nemo_toolkit[asr]

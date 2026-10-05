@@ -10,7 +10,7 @@
 # produce the image that runs anywhere. The published images are
 # ghcr.io/aureld16/pyclean-audio:{cpu,gpu} (see .github/workflows/).
 #
-# The base dependency set is the 4 packages installed by run.sh:45-47, copied
+# The base dependency set is the 5 packages installed by run.sh, copied
 # as requirements-base.txt (requirements.txt keeps its "everything, ASR
 # included" meaning). The container never calls run.sh (that installs at
 # start-up and hardcodes --host 127.0.0.1); its venv is built at build time.
