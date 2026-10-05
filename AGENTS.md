@@ -432,12 +432,26 @@ hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
 
 ### Publishing / updating the images
 
-Two tags only, `:cpu` and `:gpu`, both public on `ghcr.io`; no `:latest`. The
-README documents how to *use* them, not how they get there — this is the whole
-procedure.
+Two tags are always published, `:cpu` and `:gpu`, both public on `ghcr.io`; no
+`:latest`. The README documents how to *use* them, not how they get there — this
+is the whole procedure.
 
 - `.github/workflows/docker-publish.yml` rebuilds and pushes them, on
   `workflow_dispatch` (pick one variant) or on a `docker-v*` tag (both).
+- **A versioned run also publishes `:<version>-<variant>`** (e.g. `:v1.01-cpu`),
+  so the release is visible on the package page next to its images. The version
+  is read from the git tag on a tag push (`docker-v1.01` → `v1.01`), or typed in
+  the `version` input of a manual run — which is how a version is re-released
+  without moving its tag (a dispatch runs the workflow file *of the dispatched
+  ref*, so dispatching on an old tag re-runs that old file). The suffix is not
+  cosmetic: the two matrix legs build two different images, so a bare `v1.01`
+  would belong to whichever leg pushed last.
+- **The image reference is assembled lower-cased, never inlined as
+  `ghcr.io/${{ github.repository }}`**: that expression keeps the case of the
+  repository URL (`AurelD16/pyclean-audio`) and an OCI reference must be lower
+  case, so buildx rejects it before building anything ("repository name must be
+  lowercase"). It is derived from `github.repository` in the `ref` step so a
+  repository rename cannot republish under a stale name.
 - It authenticates with the repository's own `GITHUB_TOKEN`
   (`permissions: packages: write`) — no secret to configure — and builds
   `linux/amd64` only, one matrix leg per variant.

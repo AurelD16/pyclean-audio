@@ -4,9 +4,25 @@ name: docker-publish
 #   * manually, for one variant (Actions → this workflow → Run workflow);
 #   * automatically when a `docker-v*` tag is pushed (e.g. docker-v1, docker-v2).
 #
-# Only two tags exist: `:cpu` and `:gpu`, both public. No `:latest`: a floating
-# tag on a self-hosted tool is a support problem, and these images are versioned
-# by content digest instead.
+# Two tags are always published, `:cpu` and `:gpu`, both public. No `:latest`: a
+# floating tag on a self-hosted tool is a support problem, and these images are
+# versioned by content digest instead. A *versioned* run also publishes
+# `:<version>-<variant>` (e.g. `:v1.01-cpu`), which is what puts the release on
+# the package page next to its images. The version is suffixed with the variant
+# because the two matrix legs build two *different* images: a bare `v1.01` would
+# be claimed by whichever leg pushed last.
+#
+# The version comes from the git tag on a tag push (`docker-v1.01` → `v1.01`), or
+# from the `version` input on a manual run. The input is what makes a re-release
+# possible without moving the tag: the workflow file is read from the dispatched
+# ref, so dispatching *on* an old tag would run the old workflow.
+#
+# **The image name must be lower case.** `github.repository` is not: it keeps the
+# case of the repository URL (`AurelD16/pyclean-audio`), and buildx then refuses
+# the reference before building anything ("failed to build: invalid tag
+# ghcr.io/AurelD16/pyclean-audio:cpu: repository name must be lowercase"). The
+# reference is therefore assembled and lower-cased in the `ref` step, and never
+# written as `ghcr.io/${{ github.repository }}` inline.
 #
 # No secret to configure: GITHUB_TOKEN is enough for the repository's own
 # packages. The images are big (the GPU one carries CUDA torch), so the build
@@ -22,6 +38,11 @@ on:
         required: true
         default: cpu
         options: [cpu, gpu]
+      version:
+        description: "Version to publish next to the variant tag (e.g. v1.01); empty = variant tag only. A docker-v* tag push takes it from the tag."
+        type: string
+        required: false
+        default: ""
   push:
     tags:
       - "docker-v*"
@@ -62,6 +83,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve the image reference and its tags
+        id: ref
+        env:
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # An OCI reference is lower case only; `github.repository` is not (see
+          # the header). Derived, not hardcoded, so a repository rename cannot
+          # silently republish under a stale name.
+          name="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          # A tag push carries its own version (`docker-v1.01` → `v1.01`); a
+          # manual run gets it from the input, and may publish none.
+          version="$VERSION"
+          case "$REF" in
+            refs/tags/docker-v*) version="${REF#refs/tags/docker-}" ;;
+          esac
+          # The version goes straight into an image reference: refuse anything
+          # that is not a bare version number rather than build and push a
+          # refspec nobody can pull.
+          if [ -n "$version" ] && ! printf '%s' "$version" | grep -Eq '^v?[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::invalid version \"$version\": expected a bare version number, e.g. v1.01 or 1.0"
+            exit 1
+          fi
+          {
+            echo "name=$name"
+            echo "tags=${name}:${{ matrix.variant }}"
+            # `if`, not a `&&` list: as the last command of the group a false
+            # test would return 1 and abort the step under `bash -e`.
+            if [ -n "$version" ]; then
+              echo "tags+=${name}:${version}-${{ matrix.variant }}"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ${{ matrix.variant }}
         uses: docker/build-push-action@v6
         with:
@@ -70,7 +125,9 @@ jobs:
           # tag can never disagree with what is inside it.
           target: ${{ matrix.variant }}
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ matrix.variant }}
+          # newline-separated: the variant tag, plus `:<version>-<variant>` when
+          # a version is known (see the header).
+          tags: ${{ steps.ref.outputs.tags }}
           platforms: linux/amd64
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,scope=${{ matrix.variant }},mode=min
@@ -85,7 +142,7 @@ jobs:
         # page or with a PAT that carries write:packages.
         continue-on-error: true
         env:
-          IMAGE: ghcr.io/${{ github.repository }}:${{ matrix.variant }}
+          IMAGE: ${{ steps.ref.outputs.name }}:${{ matrix.variant }}
         run: |
           docker logout ghcr.io 2>/dev/null || true
           if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
