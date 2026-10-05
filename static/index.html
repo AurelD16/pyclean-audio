@@ -454,7 +454,6 @@
       "ui.opt_url_placeholder": "https://www.youtube.com/watch?v=…",
       "ui.opt_url_selected": "Video URL: {name}",
       "ui.opt_url_help": "— any site yt-dlp supports. The file is downloaded, then enhanced like an upload.",
-      "ui.opt_out_format": "Output format",
       "ui.opt_ytdlp_mp4": "MP4 (enhanced audio + video)",
       "ui.opt_ytdlp_mp3": "MP3 (audio only — the video is dropped)",
       "ui.opt_subtitles": "Download the site's subtitles",
@@ -563,7 +562,6 @@
       "ui.opt_url_placeholder": "https://www.youtube.com/watch?v=…",
       "ui.opt_url_selected": "URL de la vidéo : {name}",
       "ui.opt_url_help": "— n'importe quel site pris en charge par yt-dlp. Le fichier est téléchargé, puis amélioré comme un envoi.",
-      "ui.opt_out_format": "Format de sortie",
       "ui.opt_ytdlp_mp4": "MP4 (audio amélioré + vidéo)",
       "ui.opt_ytdlp_mp3": "MP3 (audio seul — la vidéo est abandonnée)",
       "ui.opt_subtitles": "Télécharger les sous-titres du site",
@@ -1297,9 +1295,9 @@ function renderFolderResults(job, btns) {
     T(a, "ui.dl_zip");
   }
 
-// la note est composée de deux morceaux selon le format : `bind` (et non `T`)
-// pour que le changement de langue la reconstruise
-bind($("note"), () => t(fmt === "mp3" ? "ui.note_folder_mp3" : "ui.note_folder_wav")
+  // la note est composée de deux morceaux selon le format : `bind` (et non `T`)
+  // pour que le changement de langue la reconstruise
+  bind($("note"), () => t(fmt === "mp3" ? "ui.note_folder_mp3" : "ui.note_folder_wav")
     + t("ui.note_folder_tail")
     + (job.source === "ytdlp" ? " " + t("ui.note_ytdlp") : ""));
 

@@ -125,9 +125,13 @@ English.
     `_pyclean-audio` suffix). Stem collisions inside one subfolder are suffixed
     `_2`, `_3`… both for the output folder and for the ZIP.
   - **Name sanitising**: `_safe_relpath()` strips `..` and absolute paths from
-    multipart names; in single-file mode the upload name is additionally reduced
-    to `[A-Za-z0-9._-]` and 80 chars (regex in `enhance()`), while `job["stem"]`
-    — hence the download names — keeps the original name. `_save_upload()` writes
+    multipart names — **and from a yt-dlp video title** (`_download_plan()`:
+    the title becomes the entry's `relpath`, which `_build_folder_zip()` turns
+    into archive entry names, so an unsanitised `../../tmp/x` would write the ZIP
+    entries outside the extraction directory); in single-file mode the upload
+    name is additionally reduced to `[A-Za-z0-9._-]` and 80 chars (regex in
+    `enhance()`), while `job["stem"]` — hence the download names — keeps the
+    original name. `_save_upload()` writes
     in 1 MB chunks, accounts a **shared** budget across the files of one request,
     and skips an empty file (folder mode) instead of failing.
   - **Queue**: a bounded `queue.Queue` (`PYCLEAN_QUEUE_MAX`) and a **single**

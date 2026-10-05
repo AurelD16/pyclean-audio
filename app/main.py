@@ -694,7 +694,7 @@ def _check_url(url: str) -> None:
 
 
 def _download_plan(entries: list[dict]):
-    """Sanitised stems for the resolved entries, duplicates suffixed `_2`, `_3`…
+    """Sanitised names for the resolved entries, duplicates suffixed `_2`, `_3`…
 
     Same rule as a folder upload (two videos of a playlist share a title there),
     otherwise two entries would answer the same download name.
@@ -708,7 +708,13 @@ def _download_plan(entries: list[dict]):
         seen[stem.lower()] = n
         if n > 1:
             stem = f"{stem}_{n}"
-        out.append({"id": ent.get("id"), "title": raw, "stem": stem})
+        # A video title is chosen by whoever uploaded the video: it goes through
+        # `_safe_relpath` exactly like a multipart name, because `relpath` is
+        # what `_build_folder_zip` turns into archive entry names — an unsanitised
+        # "../../tmp/x" would write the ZIP entries outside the extraction dir.
+        rel = _safe_relpath(raw)
+        out.append({"id": ent.get("id"), "title": raw, "stem": stem,
+                    "relpath": str(rel) if rel is not None else stem})
     return out
 
 
@@ -984,7 +990,7 @@ async def download_media(url: str = Form(...),
     else:
         files = [{
             "index": i,
-            "relpath": ent["title"],
+            "relpath": ent["relpath"],
             "stem": ent["stem"],
             "state": "queued",
             "stage": stage_text("queued"),

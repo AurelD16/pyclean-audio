@@ -206,3 +206,24 @@ def test_le_libelle_vient_du_triple_jusqu_a_la_barre(html):
         r"showProgress\(\s*jobStage\(job\)\s*,\s*job\.progress\s*\)", html
     )
     assert "stageText(stage)" in fonction_js(html, "function showProgress(")
+
+
+def test_aucune_cle_json_en_double(html):
+    """`JSON.parse` et `json.loads` gardent la **dernière** occurrence d'une clé
+    dupliquée : les tests passeraient, l'éditeur serait trompé. Le dictionnaire
+    doit donc être sans doublon, dans les deux sections et les deux langues."""
+    def paires(repere):
+        def hook(pairs):
+            vus, doublons = set(), set()
+            for cle, _ in pairs:
+                if cle in vus:
+                    doublons.add(cle)
+                vus.add(cle)
+            assert not doublons, f"{repere}: clé(s) en double {sorted(doublons)}"
+            return dict(pairs)
+
+        return hook
+
+    m = DICT_RE.search(html)
+    assert m, "the translations JSON block is missing from index.html"
+    json.loads(m.group(1), object_pairs_hook=paires("i18n"))

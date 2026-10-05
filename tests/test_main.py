@@ -1098,6 +1098,36 @@ def test_run_download_job_playlist_devient_un_dossier(data_dir, harness,
     assert not (data_dir / "d4" / "src" / "1").exists()
 
 
+def test_un_titre_hostile_ne_sort_pas_du_zip(data_dir, no_dns, yt_ready, harness,
+                                            fake_download, fake_pipeline,
+                                            monkeypatch):
+    """Regression (securite) : le titre d'une video est choisi par celui qui
+    l'a mise en ligne, et `_build_folder_zip` se fie a `relpath` — un titre non
+    assaini ecrirait des entrees du ZIP hors du repertoire d'extraction
+    (« ../../../../tmp/pwned »). Le titre passe par `_safe_relpath`, comme un
+    nom de fichier d'envoi."""
+    monkeypatch.setattr(m.downloader, "resolve", lambda url: [
+        {"id": "v1", "title": "../../../../tmp/pwned"},
+        {"id": "v2", "title": "/etc/absolute"},
+    ])
+    reponse = _post(url=VIDEO_URL)
+    assert reponse.status_code == 200
+    job = m.JOBS[reponse.json()["job_id"]]
+    harness[1]()
+
+    assert wait_state(job, ("done", "error")), job.get("error")
+    assert job["state"] == "done"
+    assert job["zip"]
+    with zipfile.ZipFile(job["zip"]) as zf:
+        names = zf.namelist()
+    for name in names:
+        assert ".." not in name.split("/"), name
+        assert not name.startswith("/"), name
+        assert not Path(name).is_absolute(), name
+    assert sorted(names) == ["etc/absolute_pyclean-audio.mp3",
+                             "tmp/pwned_pyclean-audio.mp3"], names
+
+
 def test_run_download_job_signale_un_echec_par_entree(data_dir, harness,
                                                        fake_download,
                                                        fake_pipeline):
