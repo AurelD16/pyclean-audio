@@ -283,7 +283,7 @@ English.
   composes the reasons deterministically, `off = asrMissing || ytd`, and only
   the *wording* distinguishes “the site's subtitles replace it” from “not
   available in this mode” (`ui.opt_transcribe_subs` / `ui.opt_transcribe_ytdlp`);
-  `tests/test_i18n.py` locks that shape, since CI has no JS runtime), a
+  `tests/test_i18n.py` locks that shape, since CI has no JS runtime, a
   “site subtitles” checkbox + language select in the
   YouTube mode (`paintYtdlpRow()`, part of the `applyLang` replay), queue
   position, “Cancel processing” button, “Delete results” button, job polling,

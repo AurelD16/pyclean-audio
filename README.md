@@ -330,7 +330,9 @@ being processed.
 - **Options**: “Reduce noise”, input bandwidth (8/16/24 kHz), “Cutoff (Hz,
   advanced)”, output format (folder mode, YouTube mode), and “Transcribe the
   cleaned audio” (off by default; disabled with an explanation when NeMo is not
-  installed, or when the site's subtitles are requested).
+  installed, and disabled outright in the YouTube tab, where
+  `POST /api/download` takes no `transcribe` — the site's subtitles, or
+  nothing).
 - **A/B comparison**: the two players (source / enhanced) are **linked** — play,
   pause and seek are mirrored, and the “▶ Source” / “▶ Enhanced” buttons switch
   versions at the same timecode. Untick “linked” to decouple them.
