@@ -414,7 +414,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 
 ```bash
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # ~209 tests, ~6 s, no model weights loaded
+.venv/bin/python -m pytest        # ~220 tests, ~6 s, no model weights loaded
 .venv/bin/python -m ruff check .  # lint
 ```
 

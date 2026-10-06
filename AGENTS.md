@@ -33,7 +33,7 @@ uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi 
 
 # tests and lint
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest            # ~209 tests, ~6 s, no model loaded
+.venv/bin/python -m pytest            # ~220 tests, ~6 s, no model loaded
 .venv/bin/python -m ruff check .      # `ruff check` is the only lint that counts (no ruff format)
 
 # container (see the "Docker" section below)
@@ -261,11 +261,13 @@ English.
   (server keys present in both languages, no key shadowing across sections, same
   parameter names in both languages, the page's hardcoded English up to date,
   flags located under the badge and in order).
-  `tests/test_asr_constraints.py` reads the source of every
-  `nemo_toolkit[asr]` install site (Dockerfile, `run.sh`, `requirements.txt`,
+  `tests/test_asr_constraints.py` reads the source of the watched
+  `nemo_toolkit[asr]` install sites (Dockerfile, `run.sh`, `requirements.txt`,
   the two docs) and fails if one of them does not carry the
   `requirements-asr.txt` constraint — it is a source-level test, no network and
-  no JS runtime, see "ASR constraints".
+  no JS runtime, see "ASR constraints". Its scope is that list: a new site in a
+  **new** file is not watched, so widen the list in the same commit that adds
+  the installer.
 
 ## Model constraints to respect
 

@@ -1,10 +1,17 @@
-"""The ASR floors must ride along with every `nemo_toolkit[asr]` install site.
+"""The ASR floors must ride along with every *watched* `nemo_toolkit[asr]` site.
 
 An unpinned `nemo_toolkit[asr]` resolves to transformers 4.x / tokenizers 0.10.3,
 a 2021 release with no cp311 wheel, so the install stops with "can't find Rust
 compiler" (see "ASR constraints" in AGENTS.md). The floors themselves live in
-requirements-asr.txt; this module only checks that the six install sites carry
-that file, and that it is the only place a version is written.
+requirements-asr.txt; this module only checks that the install sites carry that
+file, and that it is the only place a version is written.
+
+**Scope — this is not a tree-wide guarantee.** The watched set is the
+`Dockerfile`, `run.sh`, the `requirements*.txt` of the root, and the two docs
+that repeat the command (`AGENTS.md`, `README.md`). A site in a *new* file — a
+`scripts/setup-asr.sh`, say — is not covered, and would not fail this module: the
+tree is not globbed. Widening the set is a one-line change in the two call sites
+below, and belongs with the file that introduces the new installer.
 
 Source-level, like the other tests in this suite: no network, no pip
 resolution, no JS runtime. The sites are *extracted* (logical lines, code blocks,
@@ -76,7 +83,15 @@ def _etages(source):
     """(nom d'étage, lignes logiques sans commentaire) : le Dockerfile est
     découpé sur ses `FROM`, pas lu d'un bloc, parce qu'un `COPY` n'appartient
     qu'à l'étage qui le déclare. Une étape sans `AS` porte le nom de son image,
-    et une ligne commentée n'est ni une étape ni une instruction."""
+    et une ligne commentée n'est ni une étape ni une instruction.
+
+    Limite connue, et elle échoue du bon côté: un `FROM` porteur d'un drapeau
+    (`FROM --platform=$BUILDPLATFORM python:3.11-slim AS builder-cpu`) est nommé
+    d'après ce drapeau, donc l'étage sort de la comparaison et l'assertion sur
+    les noms échoue bruyamment, en rouge. `docker-publish.yml` passe les
+    plateformes par `platforms:` et non par un `FROM --platform`, donc rien ne
+    le déclenche aujourd'hui; le fix serait `(?:--platform=\\S+\\s+)*` avant le
+    groupe image."""
     nom, lignes = None, []
     for no, ligne in _lignes_logiques(source):
         nue = COMMENTAIRE.sub("", ligne).strip()
@@ -214,7 +229,12 @@ def test_chaque_constructeur_copie_le_fichier_de_contraintes():
     deux constructeurs sont deux `FROM` distincts, et l'étage `test` copie
     lui aussi les sources gardées. Un `COPY` dans une seule étape ne couvre
     donc pas l'autre constructeur — c'est ce que la version précédente laissait
-    passer (3 COPY comptés pour 2 installs)."""
+    passer (3 COPY comptés pour 2 installs).
+
+    Autre limite, celle-là non vérifiée: l'**ordre** des instructions. Un `COPY`
+    placé après le `RUN` de NeMo satisferait ce test et casserait quand même la
+    construction, à la construction de l'image. Rouge, donc dans la bonne
+    direction, mais ce n'est pas une couverture complète."""
     source = (RACINE / "Dockerfile").read_text(encoding="utf-8")
     concernes = {}
     for nom, lignes in _etages(source):
