@@ -192,8 +192,14 @@ subtitles — from the **enhanced** audio, using
 ```bash
 ./run.sh --asr                       # installs nemo_toolkit[asr] into .venv
 # equivalent, without the wrapper:
-uv pip install "nemo_toolkit[asr]"   # or: uv pip install -r requirements.txt
+uv pip install -c requirements-asr.txt "nemo_toolkit[asr]"   # or: uv pip install -r requirements.txt
 ```
+
+`-c requirements-asr.txt` is required: it keeps the install on `transformers`
+5.x / `tokenizers` >= 0.21. Without it the resolver walks back to a 2021
+`tokenizers` with no Python 3.11 wheel and the install stops with
+`can't find Rust compiler` (the same constraint is used by the Docker images, see
+[AGENTS.md](https://github.com/AurelD16/pyclean-audio/blob/main/AGENTS.md)).
 
 `--asr` (or `PYCLEAN_WITH_ASR=1`) adds the dependency to the existing
 environment — it never recreates `.venv`, so LavaSR stays installed. The

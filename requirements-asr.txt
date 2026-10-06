@@ -1,0 +1,26 @@
+# Floors for the ASR install (`nemo_toolkit[asr]`), and the one place they are
+# written. Every install site passes this file with `-c requirements-asr.txt`:
+# both builders in the Dockerfile, `./run.sh --asr` (run.sh does `cd
+# "$(dirname "$0")"`, so the relative name works from anywhere), and
+# requirements.txt, which carries the `-c` line itself so `pip install -r
+# requirements.txt` is constrained too.
+#
+# Why, when nothing else in this project is pinned: an *unpinned*
+# `nemo_toolkit[asr]` no longer resolves to a set that can be built on cp311.
+# The resolver takes the newest `huggingface-hub` (2.x) first, then the newest
+# `transformers` that still accepts hub 2.x — 4.12.2, from 2022 — which drags
+# `tokenizers` back to 0.10.3 (2021). That release has no cp311 wheel, so the
+# install tries to build it from source and dies with
+#
+#     error: Failed to build `tokenizers==0.10.3`
+#            running build_rust
+#            error: can't find Rust compiler
+#
+# Both floors are kept even though either one alone is enough today: they
+# describe the same requirement from two sides, so neither package can walk back
+# into the 2021/2022 set on its own. They are floors, not a lock file — nothing
+# else is pinned, and no lock file is introduced here. If a floor ever becomes
+# unsatisfiable the install must fail loudly: a silent fallback to
+# `transformers` 4.x would produce an image that still claims to ship NeMo 3.0.
+transformers>=5
+tokenizers>=0.21

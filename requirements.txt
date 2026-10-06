@@ -2,4 +2,7 @@ LavaSR @ git+https://github.com/ysharma3501/LavaSR.git
 fastapi
 uvicorn[standard]
 python-multipart
+# ASR floors, shared with the Dockerfile and run.sh: unpinned, nemo_toolkit[asr]
+# resolves to a transformers 4.x / tokenizers 0.10.3 set with no cp311 wheel.
+-c requirements-asr.txt
 nemo_toolkit[asr]

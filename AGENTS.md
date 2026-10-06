@@ -11,9 +11,12 @@ transcribe the cleaned audio (Parakeet TDT via NeMo, optional).
 uv venv .venv
 uv pip install "LavaSR @ git+https://github.com/ysharma3501/LavaSR.git" fastapi "uvicorn[standard]" python-multipart
 # extra for --transcribe / the "Transcribe" checkbox: ./run.sh --asr
-# (or: uv pip install "nemo_toolkit[asr]", or -r requirements.txt)
+# (or: uv pip install -c requirements-asr.txt "nemo_toolkit[asr]", or -r requirements.txt)
 # NeMo is deliberately out of the base install: several Go, and it pins its own
 # torch version. --asr adds it to an existing .venv without recreating it.
+# The -c (requirements-asr.txt) is required, not a preference: unpinned, the ASR
+# install resolves to transformers 4.x / tokenizers 0.10.3 and dies with
+# "can't find Rust compiler" (no cp311 wheel). See "ASR constraints" below.
 
 # web server (port 8787)
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
@@ -258,6 +261,11 @@ English.
   (server keys present in both languages, no key shadowing across sections, same
   parameter names in both languages, the page's hardcoded English up to date,
   flags located under the badge and in order).
+  `tests/test_asr_constraints.py` reads the source of every
+  `nemo_toolkit[asr]` install site (Dockerfile, `run.sh`, `requirements.txt`,
+  the two docs) and fails if one of them does not carry the
+  `requirements-asr.txt` constraint — it is a source-level test, no network and
+  no JS runtime, see "ASR constraints".
 
 ## Model constraints to respect
 
@@ -393,7 +401,9 @@ hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
   both images (2.x when NeMo is absent). That combination — LavaSR against
   hub 1.33.0 — is verified (imports, and a full enhancement + transcription job);
   re-verify it after bumping anything, and never paper over a conflict with
-  `--no-deps`.
+  `--no-deps`. The install also passes `-c requirements-asr.txt` (see "ASR
+  constraints" below) — both builders `COPY` it next to `requirements-base.txt`,
+  and dropping it breaks the build.
 - **No volume on `/app/data`.** `_purge_orphans()` wipes `data/jobs/` at every
   start (jobs live in memory), so a volume there would look persistent and be
   empty after each restart. The only volume is the HuggingFace cache
@@ -423,7 +433,10 @@ hardcodes `--host 127.0.0.1`). Rules to keep if you touch it:
   API (the visibility endpoint answers 404).
 - Nothing is pinned (base tag, deps, LavaSR ref) — consistent with the rest of
   the project. The images are not bit-reproducible; don't invent a lock file.
-  `linux/amd64` only.
+  `linux/amd64` only. The single exception is `requirements-asr.txt`, and it is
+  an exception because the unpinned resolution no longer builds at all — see
+  "ASR constraints" below.
+
 - **Never write an exact count of packages or wheels in the documentation** —
   "+91 packages", "16 CUDA wheels", "208 tests" all rot on the next build or the
   next test. Write "several", `~N`, or the exact version of a single package
@@ -476,6 +489,49 @@ is the whole procedure.
 - A package is private until its visibility is set to public, once, by hand on
   the package page; the workflow only warns when that has not been done.
 
+## ASR constraints
+
+`requirements-asr.txt` holds the two floors of the ASR install —
+`transformers>=5` and `tokenizers>=0.21` — and it is the only file they are
+written in. Every install site passes it with `-c requirements-asr.txt`: the two
+builders of the `Dockerfile`, the two `uv pip install` of `run.sh` (`--asr`, on
+an existing `.venv` and on a fresh one — `run.sh` starts with `cd
+"$(dirname "$0")"`, so the relative name works), and `requirements.txt`, which
+carries the `-c` line itself so `pip install -r requirements.txt` is covered.
+`tests/test_asr_constraints.py` reads all of them and fails if one site ever
+loses the constraint, so a new site cannot reintroduce the hazard silently.
+
+Why a floor is needed at all, when nothing else is pinned: an **unpinned**
+`nemo_toolkit[asr]` does not resolve to a set that can be installed on cp311.
+The resolver takes the newest `huggingface-hub` (2.x) first, then the newest
+`transformers` still compatible with hub 2.x — **4.12.2** — which drags
+`tokenizers` back to **0.10.3**, a 2021 release with no cp311 wheel. The install
+then builds it from source and stops with
+
+```
+error: Failed to build `tokenizers==0.10.3`
+       running build_rust
+       error: can't find Rust compiler
+```
+
+The symptom names neither the cause nor the remedy, which is why it is written
+down here. With the floors, the same resolution gives `transformers` 5.x +
+`tokenizers` >= 0.21 + `huggingface-hub` 1.33.0 — the combination this file
+already documents as verified. Reproduce either side with:
+
+```bash
+printf 'nemo_toolkit[asr]\n' > /tmp/asr.in
+uv pip compile --python-version 3.11 -c requirements-asr.txt /tmp/asr.in   # constrained
+uv pip compile --python-version 3.11 /tmp/asr.in                         # the break
+```
+
+Two floors rather than one: either alone is enough today, and keeping both
+means neither package can walk back into the 2021/2022 set on its own. This is
+**not** a lock file — a floor per package, no other version touched, no
+`--no-deps`, no `--resolution`, no Rust in the builders. If a floor ever becomes
+unsatisfiable the install must fail **loudly**: a silent fallback to
+`transformers` 4.x is worse than a red build, because the image would still claim
+to ship NeMo 3.0.
 ## Quick tests
 
 ```bash

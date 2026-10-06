@@ -29,6 +29,11 @@ if [ "${PYCLEAN_WITH_ASR:-0}" = "1" ]; then WITH_ASR=1; fi
 # NeMo is out of the base install: it weighs several GB and pins its own torch
 # versions, so it is only added on request. Detection uses importlib (no import),
 # hence a few milliseconds.
+#
+# -c requirements-asr.txt is mandatory, not a preference: unpinned,
+# nemo_toolkit[asr] resolves back to transformers 4.x / tokenizers 0.10.3, a
+# 2021 release with no cp311 wheel, and the install dies with "can't find Rust
+# compiler". See the file itself.
 asr_installed() {
   [ -x .venv/bin/python ] && .venv/bin/python -c \
     'import importlib.util as u, sys; sys.exit(0 if u.find_spec("nemo") else 1)' 2>/dev/null
@@ -36,7 +41,7 @@ asr_installed() {
 
 if [ "$WITH_ASR" = "1" ] && [ -d .venv ] && ! asr_installed; then
   echo "Transcription requested: adding nemo_toolkit[asr] to .venv…"
-  uv pip install -q "nemo_toolkit[asr]"
+  uv pip install -q -c requirements-asr.txt "nemo_toolkit[asr]"
 fi
 
 if [ ! -d .venv ]; then
@@ -47,7 +52,7 @@ if [ ! -d .venv ]; then
     fastapi "uvicorn[standard]" python-multipart
   if [ "$WITH_ASR" = "1" ]; then
     echo "Adding nemo_toolkit[asr] for transcription (slower)…"
-    uv pip install -q "nemo_toolkit[asr]"
+    uv pip install -q -c requirements-asr.txt "nemo_toolkit[asr]"
   fi
 fi
 
