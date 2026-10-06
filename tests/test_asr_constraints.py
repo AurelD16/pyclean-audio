@@ -72,6 +72,28 @@ def _sources(nom):
     return _lignes_logiques(source)
 
 
+def _etages(source):
+    """(nom d'étage, lignes logiques sans commentaire) : le Dockerfile est
+    découpé sur ses `FROM`, pas lu d'un bloc, parce qu'un `COPY` n'appartient
+    qu'à l'étage qui le déclare. Une étape sans `AS` porte le nom de son image,
+    et une ligne commentée n'est ni une étape ni une instruction."""
+    nom, lignes = None, []
+    for no, ligne in _lignes_logiques(source):
+        nue = COMMENTAIRE.sub("", ligne).strip()
+        if not nue:
+            continue
+        if re.match(r"(?i)FROM\s", nue):
+            if nom is not None:
+                yield nom, lignes
+            m = re.match(r"(?i)FROM\s+(\S+)(?:\s+AS\s+(\S+))?", nue)
+            nom, lignes = (m.group(2) or m.group(1)).lower(), []
+            continue
+        if nom is not None:
+            lignes.append((no, nue))
+    if nom is not None:
+        yield nom, lignes
+
+
 def _sites(nom):
     """Les lignes qui installent réellement NeMo : ni un `echo`, ni une prose,
     ni une mention dans un message d'erreur ne comptent."""
@@ -184,15 +206,32 @@ def test_tout_requirements_qui_installe_nemo_est_contraint():
     assert CONTRAINTES in cites, f"requirements.txt installe {ASR} sans {CONTRAINTES}"
 
 
-def test_le_dockerfile_copie_le_fichier_de_contraintes_dans_chaque_constructeur():
+def test_chaque_constructeur_copie_le_fichier_de_contraintes():
     """`-c requirements-asr.txt` échoue à la construction si le COPY manque:
-    `-c` ne va pas chercher le fichier dans le contexte de build."""
-    lignes = _lignes_logiques((RACINE / "Dockerfile").read_text(encoding="utf-8"))
-    copies = [x for _, x in lignes if x.upper().startswith("COPY") and CONTRAINTES in x]
-    installs = _sites("Dockerfile")
-    assert len(copies) >= len(installs), (
-        f"{len(installs)} install(s) contraintes, {len(copies)} COPY : {copies}"
-    )
+    `-c` ne va pas chercher le fichier dans le contexte de build.
+
+    Le contrôle est **par étage**, et un compte global ne suffirait pas : les
+    deux constructeurs sont deux `FROM` distincts, et l'étage `test` copie
+    lui aussi les sources gardées. Un `COPY` dans une seule étape ne couvre
+    donc pas l'autre constructeur — c'est ce que la version précédente laissait
+    passer (3 COPY comptés pour 2 installs)."""
+    source = (RACINE / "Dockerfile").read_text(encoding="utf-8")
+    concernes = {}
+    for nom, lignes in _etages(source):
+        sites = [no for no, ligne in lignes if ASR in ligne and PIP_INSTALL.search(ligne)]
+        if not sites:
+            continue
+        copies = [
+            no
+            for no, ligne in lignes
+            if ligne.upper().startswith("COPY") and CONTRAINTES in ligne
+        ]
+        assert copies, (
+            f"{nom}:{sites} installe {ASR} sans copier {CONTRAINTES} — "
+            "le -c échouerait à la construction"
+        )
+        concernes[nom] = copies
+    assert set(concernes) == {"builder-cpu", "builder-gpu"}, sorted(concernes)
 
 
 def test_le_contexte_de_construction_n_exclut_pas_le_fichier_de_contraintes():
