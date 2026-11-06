@@ -18,7 +18,10 @@
 # Tags and dependencies are unpinned on purpose (like the rest of the project):
 # the images are not bit-reproducible, and "rebuild next year" can bring a new
 # torch. A lock file would contradict run.sh, which installs the same
-# unpinned set.
+# unpinned set. The one exception is requirements-asr.txt (one floor per
+# package, not a lock file): without it the unpinned ASR install resolves to
+# transformers 4.12.2 / tokenizers 0.10.3, which has no cp311 wheel and fails
+# with "can't find Rust compiler".
 
 
 # --- runtime, shared by both variants ------------------------------------------
@@ -96,7 +99,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir uv && uv venv /opt/venv
 
 WORKDIR /src
-COPY requirements-base.txt ./
+COPY requirements-base.txt requirements-asr.txt ./
 
 # torch first, and from the index: LavaSR depends on torch itself, so letting it
 # resolve would pull the default (CUDA) wheel from PyPI and silently replace the
@@ -107,8 +110,11 @@ RUN uv pip install --python /opt/venv/bin/python --index-url "$TORCH_INDEX_URL" 
 RUN uv pip install --python /opt/venv/bin/python -r requirements-base.txt
 
 # Transcription is not optional any more: it is in both published images. NeMo
-# pulls transformers, which constrains huggingface-hub — see README.md.
-RUN uv pip install --python /opt/venv/bin/python "nemo_toolkit[asr]"
+# pulls transformers, which constrains huggingface-hub — see README.md. The
+# floors in requirements-asr.txt keep the resolver out of the 2021/2022 set,
+# which is unbuildable on cp311 (no tokenizers wheel, so it needs Rust).
+RUN uv pip install --python /opt/venv/bin/python -c requirements-asr.txt \
+      "nemo_toolkit[asr]"
 
 RUN rm -rf /root/.cache /tmp/*
 
@@ -131,14 +137,15 @@ RUN apt-get update \
 RUN pip install --no-cache-dir uv && uv venv /opt/venv
 
 WORKDIR /src
-COPY requirements-base.txt ./
+COPY requirements-base.txt requirements-asr.txt ./
 
 RUN uv pip install --python /opt/venv/bin/python --index-url "$TORCH_INDEX_URL" \
       torch torchaudio
 
 RUN uv pip install --python /opt/venv/bin/python -r requirements-base.txt
 
-RUN uv pip install --python /opt/venv/bin/python "nemo_toolkit[asr]"
+RUN uv pip install --python /opt/venv/bin/python -c requirements-asr.txt \
+      "nemo_toolkit[asr]"
 
 RUN rm -rf /root/.cache /tmp/*
 
@@ -159,6 +166,11 @@ FROM cpu AS test
 USER root
 COPY pytest.ini requirements-dev.txt ./
 COPY tests/ ./tests/
+# tests/test_asr_constraints.py reads the install sites it guards, so this stage
+# also needs the sources the image was built from — it is the only stage that
+# checks the constraint against *these* files rather than against a checkout.
+COPY Dockerfile .dockerignore run.sh requirements.txt requirements-asr.txt \
+     requirements-base.txt AGENTS.md README.md ./
 RUN pip install --no-cache-dir uv \
  && uv pip install --python /opt/venv/bin/python -r requirements-dev.txt
 USER pyclean
