@@ -238,3 +238,121 @@ def test_la_confirmation_du_quit_cible_sur_un_job_en_cours(html):
     quit_app = html.split("async function quitApp()")[1].split("async ")[0]
     line = next(x for x in quit_app.splitlines() if "confirm(" in x)
     assert line.strip() == 'if (pollTimer !== null && !confirm(t("ui.quit_confirm"))) return;'
+# --------------------------------- l'étape courante (régression i18n)
+
+# Le libellé affiché au-dessus de la barre de progression avait disparu après la
+# refonte i18n : `jobStage` rendait une étape **déjà traduite**, `showProgress`
+# la traduisait une seconde fois, et `stageText` sur une chaîne retombait sur
+# `raw` — soit "". `jobStage` doit donc rendre le triple `{key, args, raw}`
+# (son contrat, documenté dans AGENTS.md) et `stageText` doit accepter les deux
+# formes. La CI n'a pas de runtime JS : on vérifie la forme des sources, sans
+# geler la mise en forme.
+
+BLOC_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+LIGNE_COMMENT_RE = re.compile(r"//[^\n]*")
+
+
+def _js(source):
+    """Sans commentaires ni espaces superflus : ce qui est comparé est le code,
+    pas sa façon de s'écrire."""
+    nu = LIGNE_COMMENT_RE.sub(" ", BLOC_COMMENT_RE.sub(" ", source))
+    return re.sub(r"\s+", " ", nu)
+
+
+def fonction_js(html, signature):
+    """Le source d'une `function`, jusqu'à l'accolade qui la referme."""
+    start = html.index(signature)
+    i, profonds = html.index("{", start), 0
+    while True:
+        if html[i] == "{":
+            profonds += 1
+        elif html[i] == "}":
+            profonds -= 1
+            if profonds == 0:
+                break
+        i += 1
+    return _js(html[start:i + 1])
+
+
+def affectation_js(html, declaration):
+    """Le source d'une affectation, jusqu'au `;` qui la termine."""
+    start = html.index(declaration)
+    return _js(html[start:html.index(";", start)])
+
+
+def test_job_stage_rend_le_triple_sans_le_traduire(html):
+    """`jobStage` rend `{key, args, raw}` : c'est `showProgress` qui traduit.
+    Le prétraduire appliquait `stageText` deux fois et vidait le libellé."""
+    src = affectation_js(html, "const jobStage")
+    assert "stageText(" not in src, f"jobStage ne doit plus traduire : {src}"
+    for champ, valeur in (
+        ("key", "j.stage_key"),
+        ("args", "j.stage_args"),
+        ("raw", "j.stage"),
+    ):
+        assert re.search(rf"\b{champ}\s*:\s*{re.escape(valeur)}\b", src), src
+
+
+def test_stage_text_accepte_une_etape_deja_traduite(html):
+    """Une chaîne est renvoyée telle quelle : sans ce cas, le repli `raw` du cas
+    `{key, args, raw}` la réduirait à "" (et le changement de langue, qui rejoue
+    `stageText(currentStage)`, aussi)."""
+    src = fonction_js(html, "function stageText(")
+    garde = re.search(r"typeof\s+st\s*===?\s*[\"']string[\"']", src)
+    assert garde, f"stageText doit accepter une chaîne déjà traduite : {src}"
+    assert garde.start() < src.index("!st.key"), (
+        "le cas « chaîne » doit précéder le repli `raw`, qui la viderait"
+    )
+
+
+def test_le_libelle_vient_du_triple_jusqu_a_la_barre(html):
+    """Toute la chaîne : `poll` → `jobStage(job)` → `showProgress` → `stageText`
+    → `#stageText`. `showProgress` doit continuer à traduire, sinon un changement
+    de langue ne réécrirait plus l'étape affichée."""
+    assert re.search(
+        r"showProgress\(\s*jobStage\(job\)\s*,\s*job\.progress\s*\)", html
+    )
+    assert "stageText(stage)" in fonction_js(html, "function showProgress(")
+
+
+def test_aucune_cle_json_en_double(html):
+    """`JSON.parse` et `json.loads` gardent la **dernière** occurrence d'une clé
+    dupliquée : les tests passeraient, l'éditeur serait trompé. Le dictionnaire
+    doit donc être sans doublon, dans les deux sections et les deux langues."""
+    def paires(repere):
+        def hook(pairs):
+            vus, doublons = set(), set()
+            for cle, _ in pairs:
+                if cle in vus:
+                    doublons.add(cle)
+                vus.add(cle)
+            assert not doublons, f"{repere}: clé(s) en double {sorted(doublons)}"
+            return dict(pairs)
+
+        return hook
+
+    m = DICT_RE.search(html)
+    assert m, "the translations JSON block is missing from index.html"
+    json.loads(m.group(1), object_pairs_hook=paires("i18n"))
+
+
+def test_la_transcription_est_indisponible_dans_le_mode_youtube(html):
+    """`POST /api/download` ne declare **pas** `transcribe`: dans l'onglet
+    YouTube la transcription Parakeet est donc impossible, sous-titres cochés ou
+    non (criterion 7 amendé). Une case cochée puis activée silencieusement serait
+    une promesse non tenue. CI n'a pas de runtime JS — comme les tests
+    ci-dessus, on verifie la forme des sources."""
+    src = fonction_js(html, "function paintTranscribeRow(")
+    off = re.search(r"const\s+off\s*=\s*([^;]+);", src)
+    assert off, src
+    # les deux raisons deterministes : NeMo absent OU mode YouTube
+    assert "asrMissing" in off.group(1) and "ytd" in off.group(1), off.group(1)
+    assert "subs" not in off.group(1), (
+        f"la case des sous-titres ne doit pas piloter `off` : {off.group(1)}")
+    assert re.search(r"\$\(\s*[\"']transcribe[\"']\s*\)\.disabled\s*=\s*off", src), src
+    assert re.search(r"if\s*\(\s*off\s*\)\s*\$\(\s*[\"']transcribe[\"']\s*\)"
+                     r"\.checked\s*=\s*false", src), src
+    assert re.search(r"transcribeRow[\"']?\)?\.classList\.toggle\([\"']off[\"'],\s*off\)",
+                     src), src
+    # le libelle dit pourquoi, y compris sans sous-titres
+    assert "ui.opt_transcribe_ytdlp" in src, src

@@ -30,10 +30,13 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 
 - [Quick start](#quick-start)
 - [Desktop app (Windows & Linux)](#desktop-app-windows--linux)
+- [Docker](#docker)
+- [Local](#local)
 - [Transcription (optional)](#transcription-optional)
 - [Output files and download names](#output-files-and-download-names)
 - [Command line](#command-line)
 - [Whole folders](#whole-folders)
+- [YouTube and other sites](#youtube-and-other-sites)
 - [Web interface](#web-interface)
 - [Configuration](#configuration)
 - [Queue, cancellation, retention](#queue-cancellation-retention)
@@ -45,6 +48,106 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 
 ## Quick start
 
+Two ways to run it — both entirely on your machine, and neither asks for an
+account:
+
+- **[Docker](#docker)** — two ready-made images (`:cpu` for any machine, `:gpu`
+  for an NVIDIA card), pulled from a public registry. Nothing to install.
+- **[Local](#local)** — `ffmpeg`, `uv` and Python 3.11 on your machine, then
+  `./run.sh` builds the environment and starts the server.
+
+Both serve the same page on <http://127.0.0.1:8787>.
+
+## Docker
+
+Two images on GitHub Container Registry, pulled without any account or token.
+Compose pulls them from the registry; it builds nothing.
+
+```bash
+docker compose up -d cpu     # or: docker compose up -d gpu
+docker compose logs -f
+docker compose down          # add -v to drop the model cache too
+```
+
+Then open <http://127.0.0.1:8787>.
+
+| Image | Size | Use |
+| ----- | ---- | --- |
+| `ghcr.io/aureld16/pyclean-audio:cpu` | ~0.7 GB (3.2 GB unpacked) | any machine, no GPU — **the default** |
+| `ghcr.io/aureld16/pyclean-audio:gpu` | ~3.5 GB (10.7 GB unpacked) | NVIDIA GPU + NVIDIA Container Toolkit |
+
+### The two images, and how they differ
+
+- **Transcription is in both.** There is no “without transcription” image any
+  more: enhancement *and* Parakeet transcription work out of the box.
+- **The only technical difference is the engine** — `:cpu` carries CPU `torch`,
+  `:gpu` carries CUDA 13.0 `torch`. Same application, same page, same
+  environment variables, same behaviour.
+- **Nothing to configure.** The app picks the device itself at load
+  (`torch.cuda.is_available()`), so `:gpu` only needs `--gpus all`, which
+  compose passes for you.
+- **The real difference is speed** — see
+  [Measured performance](#measured-performance): enhancement runs at **~200×
+  real time** on GPU, and Parakeet transcribes 54 min of audio in ~20 s on GPU
+  against **~13× real time** on CPU. `:cpu` is therefore perfectly usable; it is
+  a choice, not a fallback.
+- `:gpu` needs a driver that supports CUDA 13.0, validated on an RTX 2000 Ada.
+  On an older driver, see [Development](#development).
+- **One container at a time**: both services listen on 127.0.0.1:8787.
+
+Without compose:
+
+```bash
+docker run -d --name pyclean-audio \
+  -p 127.0.0.1:8787:8787 \
+  -v pyclean-hf:/cache \
+  ghcr.io/aureld16/pyclean-audio:cpu
+
+# the GPU variant is the same command plus --gpus all (NVIDIA Container Toolkit
+# on the host) and the :gpu tag
+docker run -d --name pyclean-audio --gpus all \
+  -p 127.0.0.1:8787:8787 -v pyclean-hf:/cache \
+  ghcr.io/aureld16/pyclean-audio:gpu
+```
+
+> [!WARNING]
+> **There is no authentication anywhere in the app.** Keep the published port on
+> `127.0.0.1`. `0.0.0.0:8787` would expose an unauthenticated upload, processing
+> and download service to your whole network. To reach it from another machine,
+> put an authenticating reverse proxy in front of it.
+
+> [!NOTE]
+> **Results are ephemeral, like the bare app**: jobs live in memory and
+> `data/jobs/` is wiped at every start, so nothing is mounted on `/app/data` and
+> `docker compose down` / a restart discards every result. The only volume worth
+> having is the HuggingFace cache (`/cache`, `HF_HOME=/cache/huggingface`): the
+> LavaSR weights (**~115 MB**) and, on the first transcription, the Parakeet
+> checkpoint (**~2.4 GB**) are downloaded once into it and reused across restarts
+> and recreations.
+
+The image has a `HEALTHCHECK` on `GET /api/status`:
+
+```bash
+curl -sf http://127.0.0.1:8787/api/status   # {"status":"ready","device":"cpu",…}
+docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
+```
+
+A few things worth knowing before you change anything:
+
+- `PORT=9000 docker compose up -d cpu` publishes and listens on 9000. With plain
+  `docker run`, change **both** sides of the mapping
+  (`-e PORT=9000 -p 127.0.0.1:9000:9000`): a mismatch still reports `healthy`,
+  because the healthcheck runs inside the container and cannot see the publish.
+- The Parakeet checkpoint (2.4 GB) arrives on the first job that asks for a
+  transcript; `PYCLEAN_PRELOAD_ASR=1` fetches it at boot instead.
+- The image runs as a **non-root user** (uid 1000), and `ffmpeg`/`ffprobe` are
+  already inside it — the app calls them by bare name.
+
+## Local
+
+The path without Docker: a Python environment on your machine, created by
+`run.sh`.
+
 **Requirements:** [`ffmpeg`](https://ffmpeg.org/) and `ffprobe` on your `PATH`,
 [`uv`](https://docs.astral.sh/uv/), and Python 3.11 (created for you by `uv venv`).
 A CUDA GPU is optional.
@@ -55,8 +158,8 @@ cd pyclean-audio
 ./run.sh
 ```
 
-`run.sh` creates `.venv`, installs LavaSR + FastAPI + uvicorn on first run
-(~4 GB of dependencies, a few minutes), and starts the server on
+`run.sh` creates `.venv`, installs LavaSR + FastAPI + uvicorn + `yt-dlp` on
+first run (~4 GB of dependencies, a few minutes), and starts the server on
 <http://127.0.0.1:8787> (it opens your browser if it can).
 
 The first launch downloads the LavaSR weights from HuggingFace
@@ -71,8 +174,9 @@ PORT=9000 ./run.sh       # custom port
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 ```
 
-Then drop an audio or video file on the page, and compare the result with the
-source using the two linked players.
+Then drop an audio or video file on the page — or paste a video URL in the
+“YouTube” tab — and compare the result with the source using the two linked
+players.
 
 > [!TIP]
 > Transcription needs an extra dependency (NeMo), which is **not** installed by
@@ -171,8 +275,14 @@ subtitles — from the **enhanced** audio, using
 ```bash
 ./run.sh --asr                       # installs nemo_toolkit[asr] into .venv
 # equivalent, without the wrapper:
-uv pip install "nemo_toolkit[asr]"   # or: uv pip install -r requirements.txt
+uv pip install -c requirements-asr.txt "nemo_toolkit[asr]"   # or: uv pip install -r requirements.txt
 ```
+
+`-c requirements-asr.txt` is required: it keeps the install on `transformers`
+5.x / `tokenizers` >= 0.21. Without it the resolver walks back to a 2021
+`tokenizers` with no Python 3.11 wheel and the install stops with
+`can't find Rust compiler` (the same constraint is used by the Docker images, see
+[AGENTS.md](https://github.com/AurelD16/pyclean-audio/blob/main/AGENTS.md)).
 
 `--asr` (or `PYCLEAN_WITH_ASR=1`) adds the dependency to the existing
 environment — it never recreates `.venv`, so LavaSR stays installed. The
@@ -188,6 +298,9 @@ If no speech is detected, the `.txt` contains the literal `(aucune parole
 détectée)` and **no** `.srt` is produced. Subtitles are not muxed into the MP4:
 they are a separate file to load in your player.
 
+In the [Docker](#docker) images this dependency is already there: both variants
+ship NeMo, so there is no `--asr` equivalent to pass.
+
 ## Output files and download names
 
 On disk, inside the job folder:
@@ -200,6 +313,7 @@ On disk, inside the job folder:
 | `<name>_pyclean-audio.mp4`  | videos                                            |
 | `<name>_transcript.txt`     | `--transcribe` / web checkbox                     |
 | `<name>_pyclean-audio.srt`  | `--transcribe`, only if timestamps were returned  |
+| `<name>.<lang>.srt`        | downloaded subtitles ([YouTube](#youtube-and-other-sites)), converted to SRT |
 
 Downloaded files are renamed: the source is served as `<name>.wav`, the enhanced
 audio as `<name>_pyclean-audio.wav` / `.mp3`. In folder mode the ZIP keeps the
@@ -252,17 +366,60 @@ are processed sequentially, each with its own download link, plus a
 > after enhancement (it only existed for the A/B players), which is about 43 %
 > less disk. Only the enhanced audio, in the chosen format, is downloadable.
 
+## YouTube and other sites
+
+**Web only** — the “YouTube” tab (next to *File* and *Folder*): paste the URL of
+a **video** or of a **whole playlist**, and `yt-dlp` does the download. The file
+then goes through the **same pipeline as an upload** (`app/processor.py`, LavaSR
+v2, then MP3 / MP4 remux): same queue, same cancellation, same retention, same
+A/B comparison and same downloads. A playlist is processed **entry by entry**
+and delivered as a single ZIP, exactly like a folder.
+
+| Option | Default | Effect |
+| ------ | ------- | ------ |
+| Output format | `mp4` | video + enhanced audio; `mp3` **drops the video entirely** (yt-dlp then fetches the audio-only stream, nothing is re-encoded from a video) |
+| Download the site's subtitles | off | asks the site for its own subtitle track and converts it to `.srt` |
+| Subtitle language | `fr` | `fr` or `en` in the page; the API takes any yt-dlp language code |
+
+The site's subtitles are a **separate `.srt` file** — downloaded as
+`<name>.srt` and named the same inside the playlist ZIP (on disk, yt-dlp's
+intermediate is `<name>.<lang>.srt`, converted to SRT) — and are **never
+muxed** into the MP4.
+
+In that tab the **Parakeet transcription is unavailable**: `POST /api/download`
+has no `transcribe` parameter, so the checkbox is greyed out and unchecked
+whatever the subtitles box says (the wording says which reason applies). Asking
+for the site's subtitles and asking for a transcript of the cleaned audio are
+two different things; you get one or the other. If the site has no subtitle in
+the chosen language, nothing is produced for it and the job still succeeds.
+
+Limits are the folder ones — a playlist is refused above
+`PYCLEAN_MAX_FILES` entries, and the total declared size above
+`PYCLEAN_MAX_FOLDER_TOTAL`. `yt-dlp` itself stops a single file above
+`PYCLEAN_MAX_SIZE`, and `PYCLEAN_MAX_DURATION` still applies once the file is
+being processed.
+
+> [!NOTE]
+> `yt-dlp` is in the **base install** (`run.sh`, `requirements-base.txt`, and
+> therefore in both Docker images) — it is pure Python and pulls no torch. When
+> it is missing, the tab is disabled with the command to run and the API answers
+> **400 `ytdlp_unavailable`**; nothing breaks in the rest of the app.
+
 ## Web interface
 
 - **Two languages**, **English by default**: the two flags (🇬🇧 / 🇫🇷) under the
   LavaSR badge switch the whole page, including the progress stage, the error
   messages, the result list and the download buttons. The choice is remembered
   in the browser (`localStorage`); a fresh browser therefore starts in English.
-- **Drag & drop** a single file, or a whole folder (recursive directory
-  enumeration via `webkitGetAsEntry` / `webkitdirectory`).
+- **Three sources**: a single file, a whole folder (recursive directory
+  enumeration via `webkitGetAsEntry` / `webkitdirectory`), or a video/playlist
+  URL downloaded with `yt-dlp` (see [above](#youtube-and-other-sites)).
 - **Options**: “Reduce noise”, input bandwidth (8/16/24 kHz), “Cutoff (Hz,
-  advanced)”, output format (folder mode), and “Transcribe the cleaned audio”
-  (off by default; disabled with an explanation when NeMo is not installed).
+  advanced)”, output format (folder mode, YouTube mode), and “Transcribe the
+  cleaned audio” (off by default; disabled with an explanation when NeMo is not
+  installed, and disabled outright in the YouTube tab, where
+  `POST /api/download` takes no `transcribe` — the site's subtitles, or
+  nothing).
 - **A/B comparison**: the two players (source / enhanced) are **linked** — play,
   pause and seek are mirrored, and the “▶ Source” / “▶ Enhanced” buttons switch
   versions at the same timecode. Untick “linked” to decouple them.
@@ -287,7 +444,8 @@ read once, at server start.
 
 | Variable | Default | Role |
 | -------- | ------- | ---- |
-| `PORT` | `8787` | listen port (used by `run.sh`) |
+| `PORT` | `8787` | listen port (used by `run.sh`, and by the container entrypoint — it also serves the healthcheck) |
+| `HF_HOME` | `~/.cache/huggingface` | HuggingFace cache (LavaSR, Parakeet). The Docker image sets it to `/cache/huggingface`, where the `pyclean-hf` volume is mounted |
 | `PYCLEAN_JOB_TTL` | `21600` | seconds before a finished job is purged (6 h) |
 | `PYCLEAN_JOB_MAX` | `200` | jobs kept in memory |
 | `PYCLEAN_QUEUE_MAX` | `20` | max waiting requests (beyond: 429) |
@@ -383,6 +541,19 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
   is an artefact of the file, not of the interface.
 - The SRT is only written if the model returns timestamps; it is never muxed
   into the MP4.
+- **`yt-dlp` breaks against the sites it supports** (YouTube changes often) and
+  is deliberately unpinned here, like every other dependency. The failure stays
+  readable — a translated `download_failed` with a truncated detail, never a
+  traceback — but a site can stop working until `yt-dlp` is updated.
+- The server fetches a **URL supplied by the client**, on a LAN, without
+  authentication. The scheme must be `http`/`https` and the host must resolve to
+  a public address (loopback, private, link-local, reserved and multicast
+  addresses are refused **before** any request). A *public* URL that redirects to
+  an internal address cannot be intercepted cheaply and stays inside `yt-dlp`.
+- Downloading is subject to the site's terms of service and to copyright. The
+  feature ships **no** circumvention: no cookies, no `--cookies-from-browser`, no
+  credentials, no DRM removal, no geo bypass. You are responsible for what you
+  point it at.
 - `HEAD` requests return 404 on the FastAPI routes (no browser impact: the page
   uses `GET`).
 
@@ -390,7 +561,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 
 ```bash
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 301 tests, ~8 s, no model weights loaded
+.venv/bin/python -m pytest        # ~486 tests, ~9 s, no model weights loaded
 .venv/bin/python -m ruff check .  # lint
 ```
 
@@ -410,6 +581,35 @@ shutdown, window).
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
+Building the images yourself (only needed to change something):
+
+```bash
+docker build --target cpu -t pyclean-audio:cpu .   # `docker build .` is the same
+docker build --target gpu -t pyclean-audio:gpu .   # CUDA 13.0 wheels
+docker build --target test .                       # runs pytest -rs, then exits
+```
+
+The GPU variant is built against **CUDA 13.0** (`cu130`), so it needs an NVIDIA
+driver that supports it — validated on an RTX 2000 Ada. On an older driver,
+rebuild with the index that matches it, for example
+`--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126`;
+`nvidia-smi` reports the driver version.
+
+The same suite also runs inside the image, on the environment the CPU variant
+actually ships (ffmpeg present, so the `requires_ffmpeg` tests are not silently
+skipped; NeMo present, so it is slower than a local run):
+
+```bash
+docker build --target test .        # installs requirements-dev.txt, runs pytest -rs, exits
+
+# smoke test of an image pulled from the registry
+docker run --rm -d --name pyclean-audio -p 127.0.0.1:8787:8787 \
+  ghcr.io/aureld16/pyclean-audio:cpu
+curl -sf http://127.0.0.1:8787/api/status
+docker inspect -f '{{.State.Health.Status}}' pyclean-audio   # healthy
+docker stop pyclean-audio
+```
+
 ```bash
 # test assets
 ffmpeg -f lavfi -i "sine=frequency=350:duration=6" -af "lowpass=2400,aresample=8000" test_8k.wav
@@ -420,7 +620,13 @@ JOB=$(curl -s -X POST -F "file=@test_8k.wav" http://127.0.0.1:8787/api/enhance \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
 curl -s http://127.0.0.1:8787/api/jobs/$JOB
 
-# model + transcription availability
+# a YouTube video (or playlist) URL — the same pipeline as an upload
+JOB=$(curl -s -X POST -F "url=https://www.youtube.com/watch?v=VIDEO_ID" \
+  -F "fmt=mp4" -F "subtitles=true" -F "subtitle_lang=fr" \
+  http://127.0.0.1:8787/api/download | python3 -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+curl -s http://127.0.0.1:8787/api/jobs/$JOB       # artifacts, or files[] for a playlist
+
+# model + transcription availability (and yt-dlp)
 curl -s http://127.0.0.1:8787/api/status
 ```
 
@@ -439,8 +645,15 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | Path | Role |
 | ---- | ---- |
 | `run.sh` | launcher: creates `.venv`, installs dependencies, starts the server (`--asr` for transcription) |
-| `app/main.py` | FastAPI API: uploads, queue, cancellation, retention, downloads |
+| `Dockerfile` | the two images: `base` + `builder-cpu` / `builder-gpu` -> `cpu` / `gpu`, opt-in `test` (runs the suite) |
+| `.github/workflows/docker-publish.yml` | rebuilds and pushes the two images to ghcr.io |
+| `docker-entrypoint.sh` | container entrypoint: resolves `$PORT`, then `exec`s uvicorn so it is PID 1 |
+| `compose.yaml` | the two variants (`up -d cpu` / `up -d gpu`): loopback-only port, `pyclean-hf` model cache, every `PYCLEAN_*` variable |
+| `.dockerignore` | keeps the build context small (`tests/` stays: the `test` stage needs it) |
+| `requirements-base.txt` | the 5 base packages (yt-dlp included), copied from `run.sh` (no NeMo) |
+| `app/main.py` | FastAPI API: uploads, yt-dlp jobs, queue, cancellation, retention, downloads |
 | `app/processor.py` | ffmpeg pipeline: decode, extract, remux, MP3, job orchestration |
+| `app/downloader.py` | `yt-dlp` wrapper: URL resolution (metadata only), download, subtitles, name sanitising |
 | `app/enhancer.py` | `LavaEnhance2` wrapper, 16 kHz windowed reader, block planning |
 | `app/transcriber.py` | Parakeet/NeMo wrapper, chunk planning, SRT rendering |
 | `app/cancel.py` | cooperative cancellation + global GPU lock |
