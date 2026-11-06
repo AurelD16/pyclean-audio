@@ -5,6 +5,8 @@ No torch is loaded: the enhancer and the transcriber are replaced by stubs
 """
 
 import json
+import os
+import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -12,7 +14,14 @@ from pathlib import Path
 import pytest
 
 from app.messages import STAGES
-from app.processor import ALLOWED_EXT, iter_media_files, probe, process_file, run_ffmpeg
+from app.processor import (
+    ALLOWED_EXT,
+    _kill,
+    iter_media_files,
+    probe,
+    process_file,
+    run_ffmpeg,
+)
 
 from .conftest import fake_ffmpeg, requires_ffmpeg
 
@@ -139,6 +148,65 @@ def test_run_ffmpeg_annulation_tue_le_processus(tmp_path, monkeypatch):
         run_ffmpeg(["-i", "in", str(tmp_path / "x")], 10.0, boom)
     # the process was killed: the trap file could not be written
     assert not spy.exists()
+
+
+# -------------------------------------------------------------------- _kill
+
+class FakePopen:
+    """Records what _kill() does to an ffmpeg process."""
+
+    def __init__(self, pid=4242, raises=None):
+        self.pid = pid
+        self.killed = 0
+        self.raises = raises
+
+    def kill(self):
+        self.killed += 1
+        if self.raises:
+            raise self.raises
+
+
+def test_kill_sur_windows_appelle_p_kill(monkeypatch):
+    """os.killpg / os.getpgid / signal.SIGKILL do not exist on Windows: without
+    the branch, a cancellation or an ffmpeg timeout raises AttributeError
+    instead of reaching "cancelled"/"error"."""
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.delattr(os, "killpg", raising=False)
+    monkeypatch.delattr(os, "getpgid", raising=False)
+    p = FakePopen()
+    _kill(p)  # must not raise
+    assert p.killed == 1
+
+
+def test_kill_sur_windows_avale_une_erreur_oserror(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    p = FakePopen(raises=OSError("already dead"))
+    _kill(p)  # must not raise
+    assert p.killed == 1
+
+
+def test_kill_sur_posix_tue_le_groupe_de_processus(monkeypatch):
+    """The POSIX behaviour is unchanged: ffmpeg's children share the group."""
+    monkeypatch.setattr(os, "name", "posix")
+    calls = []
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    p = FakePopen(pid=77)
+    _kill(p)
+    assert calls == [(77, signal.SIGKILL)]
+    assert p.killed == 0
+
+
+def test_kill_sur_posix_retombe_sur_p_kill(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+
+    def _gone(_pid):
+        raise ProcessLookupError("no such process")
+
+    monkeypatch.setattr(os, "getpgid", _gone)
+    p = FakePopen()
+    _kill(p)
+    assert p.killed == 1
 
 
 # -------------------------------------------------------------------- probe

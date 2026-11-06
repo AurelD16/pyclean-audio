@@ -1,0 +1,61 @@
+# pyclean-audio — third-party notices
+#
+# The desktop build (Windows installer, .deb, portable archive) redistributes
+# the components below. The project's own licence is LICENCE, next to this file.
+# This file is not a substitute for the licence texts themselves, which travel
+# with each component.
+
+--------------------------------------------------------------------------------
+Python — https://www.python.org/
+--------------------------------------------------------------------------------
+CPython is distributed under the Python Software Foundation License (PSF-2.0).
+Bundled as a standalone (python-build-standalone, Astral / indygreg), relocatable
+build. No modifications. Licence: https://docs.python.org/3/license.html
+
+--------------------------------------------------------------------------------
+PyTorch / torchaudio — https://pytorch.org/
+--------------------------------------------------------------------------------
+Distributed under the BSD 3-Clause License.
+  Copyright (c) 2016-present, PyTorch contributors. All rights reserved.
+Licence: https://github.com/pytorch/pytorch/blob/main/LICENSE
+The CPU build is used by default (no CUDA runtime is bundled).
+
+--------------------------------------------------------------------------------
+LavaSR — https://github.com/ysharma3501/LavaSR
+--------------------------------------------------------------------------------
+Bundled as installed from its git repository (the dependency declared in
+requirements-base.txt). Its licence applies to it and to the model weights it
+downloads at first run (LavaEnhance2 / LavaSR v2).
+
+--------------------------------------------------------------------------------
+ffmpeg / ffprobe — https://ffmpeg.org/
+--------------------------------------------------------------------------------
+Bundled as a self-contained static build (johnvansickle.com on Linux, gyan.dev
+on Windows). ffmpeg is distributed under the LGPL v2.1 or later; builds linking
+libx264, libx265 or libvpx are GPL v2 or later, and the static builds shipped
+here are **GPL** builds (they include libx264/libx265). ffmpeg is invoked as a
+separate process (app/processor.py) and is therefore not linked into
+pyclean-audio; the two-way distribution obligation is met by shipping this
+notice, the corresponding licence texts and the complete corresponding source
+offer required by the GPL.
+  Licence: https://ffmpeg.org/legal.html
+  Licence texts: https://ffmpeg.org/legal.html (GPL/LGPL versions are also
+  bundled with the source archives of the static builds used here)
+ffmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+
+--------------------------------------------------------------------------------
+Also installed by requirements-base.txt, not redistributed as source
+--------------------------------------------------------------------------------
+fastapi, uvicorn (MIT), python-multipart (Apache-2.0), numpy (BSD-3-Clause),
+soundfile (BSD-2-Clause, bundles libsndfile, LGPL-2.1+) and their
+dependencies. Each package ships its own licence file inside the installed
+site-packages directory of the runtime.
+
+--------------------------------------------------------------------------------
+Not bundled
+--------------------------------------------------------------------------------
+nemo_toolkit / Parakeet (NVIDIA, licence of the model checkpoint) — the desktop
+build ships without transcription (a supported state: the checkbox is disabled
+and the API answers 400 to transcribe=true).
+Model weights (LavaSR, ~115 MB) are downloaded from HuggingFace at first run
+and cached under the user's data directory; they are not redistributed here.

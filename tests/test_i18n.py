@@ -131,6 +131,113 @@ def test_le_texte_par_defaut_de_la_page_est_anglais(html, page_dict):
         assert text.strip() == page_dict["ui"]["en"][key].strip(), key
 
 
+# ------------------------------------------------------------- desktop build
+
+DESKTOP_KEYS = (
+    "ui.asr_missing_desktop",
+    "ui.opt_transcribe_missing_desktop",
+    "ui.transcribe_unavailable_desktop",
+)
+# The wording of the command-line version (`./run.sh --asr`): untouched, the
+# page still runs that way.
+CLI_KEYS = ("ui.asr_missing", "ui.opt_transcribe_missing")
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_libelles_du_bureau_dans_les_deux_langues(page_dict, lang):
+    """The packaged run shows these instead of the "./run.sh --asr" ones."""
+    for key in DESKTOP_KEYS:
+        assert page_dict["ui"][lang][key].strip(), key
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_aucun_libelle_du_bureau_ne_renvoie_au_terminal(page_dict, lang):
+    """Nobody who double-clicked an .exe can run ./run.sh: the wording must not
+    tell them to."""
+    for key in DESKTOP_KEYS:
+        assert "run.sh" not in page_dict["ui"][lang][key], key
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_les_libelles_de_la_ligne_de_commande_sont_intacts(page_dict, lang):
+    """`desktop: false` (./run.sh, uvicorn): the page must keep saying how to
+    enable transcription, otherwise the CLI user loses the instruction."""
+    for key in CLI_KEYS:
+        assert "run.sh" in page_dict["ui"][lang][key], key
+    assert page_dict["server"][lang]["transcribe_unavailable"].count("run.sh") == 1
+
+
+def test_la_page_bascule_sur_les_libelles_du_bureau(html):
+    """`status.desktop` drives the choice: without the switch the new keys would
+    be dead weight in the dictionary."""
+    assert "s.desktop === true" in html
+    for key in DESKTOP_KEYS:
+        # once in the EN dictionary, once in the FR one, once in the script
+        assert html.count(f'"{key}"') == 3, key
+
+
+def test_le_message_400_est_eclaire_par_la_page_en_mode_bureau(html):
+    """The checkbox is enabled until the first /api/status, so transcribe=true
+    can still be sent: the 400 must not echo the server's "./run.sh" text."""
+    assert 'code === "transcribe_unavailable"' in html
+    assert "desktopMode &&" in html
+
+
+def test_libelle_bureau_ne_masque_pas_une_cle_du_serveur(page_dict):
+    """They are page keys: `ui` wins over `server`, they never shadow one."""
+    for key in DESKTOP_KEYS:
+        assert key not in page_dict["server"]["en"]
+
+
+# --------------------------------------------------------------- bouton Quit
+
+QUIT_KEYS = ("ui.quit", "ui.quit_confirm", "ui.quit_done", "ui.quit_failed")
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_libelles_du_bouton_quit_dans_les_deux_langues(page_dict, lang):
+    """EN and FR: this control is what makes browser mode stoppable."""
+    for key in QUIT_KEYS:
+        assert page_dict["ui"][lang][key].strip(), f"{key}/{lang}"
+
+
+def test_quit_est_un_libelle_par_onglet(page_dict, html):
+    """The button's own label lives in the page (data-i18n, EN + FR); the three
+    dynamic labels live in the dictionary and are each used once."""
+    assert page_dict["ui"]["fr"]["ui.quit"] != page_dict["ui"]["en"]["ui.quit"]
+    assert html.count('"ui.quit"') == 3          # attribute + EN + FR
+    assert 'data-i18n="ui.quit">Quit pyclean-audio</button>' in html
+    for key in QUIT_KEYS[1:]:
+        assert html.count(f'"{key}"') == 3, key  # EN + FR + the script
+
+
+def test_le_bouton_quit_n_existe_qu_en_mode_bureau(html):
+    """Hidden by default, revealed only by `status.desktop`: the command-line
+    version must not offer to stop a server the launcher does not own."""
+    assert 'class="quit-row hidden"' in html
+    assert '$("quitRow").classList.toggle("hidden", !desktopMode)' in html
+
+
+def test_quit_appelle_le_point_de_terminal_du_bureau(html):
+    """POST /api/shutdown, and only that: the endpoint is desktop-only (404
+    otherwise) and a GET never reaches the handler."""
+    assert html.count('fetch("/api/shutdown"') == 1
+    assert 'fetch("/api/shutdown", { method: "POST" })' in html
+
+
+def test_le_badge_ne_disparait_pas_en_cas_erreur(html):
+    """`.error { display: none }` (the error box) also matched `.badge.error`, so
+    the model badge vanished exactly when it had something to say."""
+    assert ".badge.error { display: inline-block;" in html
+
+
+def test_la_confirmation_du_quit_cible_sur_un_job_en_cours(html):
+    """`jobId` reste armé après un job terminé ("Process another file" le remet à
+    zéro) : la confirmation ne doit partir que sur `pollTimer`, le signal que la
+    page arme à l'envoi et `stopPolling()` enlève à la fin."""
+    quit_app = html.split("async function quitApp()")[1].split("async ")[0]
+    line = next(x for x in quit_app.splitlines() if "confirm(" in x)
+    assert line.strip() == 'if (pollTimer !== null && !confirm(t("ui.quit_confirm"))) return;'
 # --------------------------------- l'étape courante (régression i18n)
 
 # Le libellé affiché au-dessus de la barre de progression avait disparu après la
