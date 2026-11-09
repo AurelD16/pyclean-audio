@@ -29,7 +29,6 @@ Both kinds of input can additionally yield a transcript and timed subtitles
 ## Contents
 
 - [Quick start](#quick-start)
-- [Desktop app (Windows & Linux)](#desktop-app-windows--linux)
 - [Docker](#docker)
 - [Local](#local)
 - [Transcription (optional)](#transcription-optional)
@@ -184,86 +183,6 @@ players.
 > `./run.sh --asr` adds it to the existing `.venv` without recreating it.
 > Until then, the “Transcribe the cleaned audio” checkbox is disabled and says why —
 > see [Transcription](#transcription-optional).
-
-## Desktop app (Windows & Linux)
-
-The same application, shipped as a **one-click desktop program**: no Python to
-install, no terminal, no configuration step. Double-click `pyclean-audio.exe`
-(Windows) or the Start-menu / app-menu entry, and the local page opens.
-
-| | Windows | Linux (Debian, Ubuntu) | Linux (other distributions) |
-| --- | --- | --- | --- |
-| Get it | `pyclean-audio-<version>-setup.exe` | `pyclean-audio_<version>_amd64.deb` | `pyclean-audio-<version>-x86_64.AppImage`, or `-linux-x86_64.tar.gz` |
-| Install | double-click, no administrator rights | `sudo dpkg -i …deb` | nothing: run the AppImage (`chmod +x` once), or extract the archive |
-| Start | Start-menu shortcut | app menu, or `pyclean-audio` | double-click the AppImage, or `./pyclean-audio/pyclean-audio` |
-| Page opens | in the app's own window | in your default browser | in your default browser |
-
-Two more formats exist for the cases above: a **portable ZIP** for Windows
-(`pyclean-audio-<version>-windows-x86_64.zip` — extract it anywhere, including a
-USB stick, and double-click `pyclean-audio\pyclean-audio.exe`: no installer, no
-shortcut, no administrator rights) and the **AppImage** for Linux, which is one
-file and installs nothing at all. On a distribution without `libfuse2`, run the
-AppImage with `--appimage-extract-and-run` (it unpacks itself and runs).
-
-Files coming out of a **downloaded ZIP keep the Mark of the Web**, so Windows may
-block the `.exe` the first time: right-click it → **Properties** → tick
-**Unblock** at the bottom → **Apply**, then run it. The installer has the same
-one-time SmartScreen warning, and both Windows formats are unsigned in v1.
-
-The **Windows** build is built with an embedded window (`-WithWebView`, the
-default): the page opens in the application's own window, and closing it quits.
-The **Linux** packages are built without one by default — `pywebview` needs the
-GTK/WebKit2GTK development files on the builder *and* the runtime libraries on
-every user's machine, and a silent degradation is worse than an honest default —
-so the page opens in the default browser.
-
-Whichever way it goes, the page is the same: same controls, and a **Quit**
-button in the top-right corner that stops the application. The browser is also
-what you get whenever the window cannot open — no WebView2 on that Windows
-machine, a `-WithWebView:$false` build, or `pywebview` not bundled — and the
-app stays fully usable. A builder can opt in on Linux with `WITH_WEBVIEW=1`
-(see [packaging/README.md](packaging/README.md)).
-
-Downloads are published on the
-[releases page](https://github.com/AurelD16/pyclean-audio/releases); you can
-also build them yourself with `packaging/` (see
-[packaging/README.md](packaging/README.md)) — each artifact is built on its own
-operating system.
-
-**What to expect:**
-
-- The download is ~2.6 GB (CPU torch is ~2.5 GB); installing is then immediate.
-- The **first launch downloads the LavaSR weights (~115 MB)** from HuggingFace,
-  once, like `./run.sh` does. The page opens immediately and the badge shows the
-  progress; the next launch is offline-ready.
-- **Stopping it:** the embedded window *is* the app — closing it quits. In
-  browser mode, where a tab cannot be followed, use the **Quit** button on the
-  page (it asks for a confirmation while a job is running). Either way the
-  server, the model and the port are released.
-- **v1 is CPU-only.** On a CPU the enhancement is much slower than on a GPU
-  (~200× real time on an RTX 2000 Ada against roughly 13× real time on 20
-  cores): a one-minute recording takes minutes, not seconds. A CUDA build is a
-  one-parameter change in the build scripts (plus `REQUIRE_CPU=0`), but it
-  requires an NVIDIA GPU on the user's machine.
-- **Transcription is not part of the desktop build** (the Parakeet model is
-  ~2.4 GB): the "Transcribe" checkbox is disabled and says so, without asking
-  anyone to run a shell script. The command-line version still has
-  `./run.sh --asr`.
-- Results are **ephemeral**: like the web version, uploads and results are
-  purged after 6 h (`PYCLEAN_JOB_TTL`), and the job folder is emptied at the
-  **next start**. Download what you want to keep.
-- **Single instance**: launching it again opens the address of the running app
-  again (a second window with pywebview, the same browser tab otherwise) instead
-  of starting a second server. If port 8787 is busy, the next free port is used
-  (the page is opened at the right URL either way).
-- The server listens on `127.0.0.1` only — the API has no authentication, so
-  it must not be reachable from the network.
-- Uninstalling removes the program files and **keeps** your results and the
-  model cache: they live outside the installation
-  (`%LOCALAPPDATA%\pyclean-audio`, `~/.local/share/pyclean-audio`, or
-  `PYCLEAN_HOME`).
-- On Windows the installer is **unsigned** in v1: SmartScreen shows "Windows has
-  protected your PC" once, then *More info → Run anyway*.
 
 ## Transcription (optional)
 
@@ -456,11 +375,6 @@ read once, at server start.
 | `PYCLEAN_MAX_FOLDER_TOTAL` | `8589934592` | max total volume per folder (8 GB) |
 | `PYCLEAN_FFMPEG_TIMEOUT` | `0` | watchdog for a single ffmpeg step (0 = unlimited) |
 | `PYCLEAN_PRELOAD_ASR` | `0` | load Parakeet at boot (`1`/`true`/`oui`/`yes`/`on`) |
-| `PYCLEAN_DATA_DIR` | `<repo>/data/jobs` | where results are written (the desktop launcher points it at the per-user state directory) |
-| `PYCLEAN_DESKTOP` | `0` | set by the desktop launcher: the page drops its `./run.sh --asr` wording, and offers the Quit button |
-| `PYCLEAN_PORT` | `8787` | preferred port of the desktop launcher (`--port` wins); the next free one is taken |
-| `PYCLEAN_HOME` | per platform | root of the desktop launcher's state directory (`%LOCALAPPDATA%\pyclean-audio`, `~/.local/share/pyclean-audio`) |
-| `PYCLEAN_NO_WINDOW` | unset | set to anything: the launcher never opens a window, only prints the URL |
 
 ```bash
 PYCLEAN_JOB_TTL=3600 PYCLEAN_MAX_DURATION=7200 ./run.sh
@@ -530,9 +444,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 - LavaSR is optimized for speech; results on pure music vary (the v2 model is
   mainly trained on VCTK).
 - Transcription requires `./run.sh --asr`; without it the option is refused up
-  front (400) rather than failing mid-job. It is not part of the desktop build
-  at all (see [Desktop app](#desktop-app-windows--linux)): the checkbox is
-  disabled there.
+  front (400) rather than failing mid-job.
 - One job at a time, and one model resident on the GPU at a time.
 - The web page is **English by default**, French as a second language (the two
   flags under the LavaSR badge). Everything else — server messages, command
@@ -561,7 +473,7 @@ RTX 2000 Ada (8 GB), torch 2.14+cu130, Python 3.11:
 
 ```bash
 uv pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # ~486 tests, ~9 s, no model weights loaded
+.venv/bin/python -m pytest        # ~220 tests, ~6 s, no model weights loaded
 .venv/bin/python -m ruff check .  # lint
 ```
 
@@ -574,10 +486,8 @@ to global resampling.) Tests touching `probe`/`process_file` are skipped when
 
 Coverage: block planning and crossfade, windowed resampling equivalence,
 transcription chunking and subtitle generation, the ffmpeg wrapper and its
-error paths (including the Windows `kill()` path), processing limits, ZIP
-building, retention, cancellation, the queue, and the desktop launcher
-(`tests/test_launcher.py`: single instance, free port, environment, startup,
-shutdown, window).
+error paths, processing limits, ZIP building, retention, cancellation, and the
+queue.
 
 `ruff format` is **not** used — `ruff check` is the only source of truth.
 
@@ -660,8 +570,5 @@ setsid bash -c '(.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --por
 | `app/messages.py` | message keys (`STAGES`, `ERRORS`), English wording, `MediaError` |
 | `app/config.py` | limits and retention, read from the environment |
 | `app/cli.py` | command line interface (English output, no translation) |
-| `requirements-base.txt` | the 4 base dependencies (what `run.sh` installs; `requirements.txt` adds the ASR models) |
-| `packaging/` | desktop application: launcher, runtime build scripts, Inno Setup installer, `.deb` / portable archive |
 | `static/index.html` | the whole web UI (drag & drop, A/B, downloads) + its EN/FR dictionary |
-| `packaging/launcher/launcher.py` | desktop launcher: picks a port, guards the single instance, starts the server, opens the window |
 | `tests/` | pytest suite |
