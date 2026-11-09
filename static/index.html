@@ -29,9 +29,7 @@
   }
   .badge.ready { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
   .badge.loading { color: var(--accent2); border-color: rgba(251, 146, 60, .4); }
-  /* `display` est redéfini ici : `.error` plus bas (la boîte d'erreur) est
-     `display: none`, et le badge s'éteignait avec elle à chaque erreur modèle. */
-  .badge.error { display: inline-block; color: var(--err); border-color: rgba(248, 113, 113, .4); }
+  .badge.error { color: var(--err); border-color: rgba(248, 113, 113, .4); }
 
   /* sélecteur de langue : deux drapeaux, la langue active en couleur */
   .langs { display: flex; gap: 6px; }
@@ -129,8 +127,6 @@
   .btns a.dl { border-color: var(--accent); color: var(--accent2); }
   .note { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
   .hidden { display: none !important; }
-  .quit-row { display: flex; align-items: center; gap: 10px; }
-  .quit-row .note { margin-top: 0; }
 
   .ghost {
     background: transparent; border: 1px solid var(--line); color: var(--muted);
@@ -184,12 +180,6 @@
       <div class="langs" role="group" aria-label="Language">
         <button type="button" class="lang" data-lang="en" title="English" aria-label="English" aria-pressed="true">🇬🇧</button>
         <button type="button" class="lang" data-lang="fr" title="Français" aria-label="Français" aria-pressed="false">🇫🇷</button>
-      </div>
-      <!-- Version installée uniquement (status.desktop) : sans fenêtre intégrée,
-           c'est le seul endroit où l'utilisateur peut arrêter l'application. -->
-      <div class="quit-row hidden" id="quitRow">
-        <button type="button" class="ghost sm" id="quitBtn" data-i18n="ui.quit">Quit pyclean-audio</button>
-        <span class="note" id="quitNote"></span>
       </div>
     </div>
   </header>
@@ -445,7 +435,6 @@
       "ui.asr_loading": " · Loading Parakeet…",
       "ui.asr_error": " · Parakeet error",
       "ui.asr_missing": " · Parakeet not installed (./run.sh --asr)",
-      "ui.asr_missing_desktop": " · Transcription not included in this version",
       "ui.mode_file": "File",
       "ui.mode_folder": "Folder (recursive)",
       "ui.mode_ytdlp": "YouTube",
@@ -485,12 +474,6 @@
       "ui.opt_transcribe": "Transcribe the cleaned audio",
       "ui.opt_transcribe_ok": "— adds a plain-text transcript (TXT) with the Parakeet TDT model (off by default; slower)",
       "ui.opt_transcribe_missing": "— unavailable: nemo_toolkit[asr] is not installed. Run ./run.sh --asr, then restart.",
-      "ui.opt_transcribe_missing_desktop": "— unavailable: transcription is not part of this installed version (audio cleaning only).",
-      "ui.transcribe_unavailable_desktop": "Transcription unavailable: this installed version cleans audio only.",
-      "ui.quit": "Quit pyclean-audio",
-      "ui.quit_confirm": "A job is still running. Quit anyway? Its results will be lost.",
-      "ui.quit_done": "pyclean-audio has stopped — you can close this window.",
-      "ui.quit_failed": "Could not stop pyclean-audio.",
       "ui.opt_transcribe_subs": "— unavailable: the site's subtitles replace the Parakeet transcription",
       "ui.opt_transcribe_ytdlp": "— unavailable here: a downloaded video is enhanced, but never transcribed (its subtitles come from the site)",
       "ui.go": "Enhance audio",
@@ -561,7 +544,6 @@
       "ui.asr_loading": " · Chargement Parakeet…",
       "ui.asr_error": " · Parakeet en erreur",
       "ui.asr_missing": " · Parakeet non installé (./run.sh --asr)",
-      "ui.asr_missing_desktop": " · Transcription non incluse dans cette version",
       "ui.mode_file": "Fichier",
       "ui.mode_folder": "Dossier (récursif)",
       "ui.mode_ytdlp": "YouTube",
@@ -601,12 +583,6 @@
       "ui.opt_transcribe": "Transcrire l'audio nettoyé",
       "ui.opt_transcribe_ok": "— ajoute une transcription texte (TXT) avec le modèle Parakeet TDT (désactivé par défaut ; plus lent)",
       "ui.opt_transcribe_missing": "— indisponible : nemo_toolkit[asr] n'est pas installé. Lancez ./run.sh --asr, puis redémarrez.",
-      "ui.opt_transcribe_missing_desktop": "— indisponible : la transcription ne fait pas partie de cette version installée (nettoyage audio uniquement).",
-      "ui.transcribe_unavailable_desktop": "Transcription indisponible : cette version installée nettoie l'audio uniquement.",
-      "ui.quit": "Quitter pyclean-audio",
-      "ui.quit_confirm": "Un traitement est encore en cours. Quitter quand même ? Ses résultats seront perdus.",
-      "ui.quit_done": "pyclean-audio s'est arrêté — vous pouvez fermer cette fenêtre.",
-      "ui.quit_failed": "Impossible d'arrêter pyclean-audio.",
       "ui.opt_transcribe_subs": "— indisponible : les sous-titres du site remplacent la transcription Parakeet",
       "ui.opt_transcribe_ytdlp": "— indisponible ici : une vidéo téléchargée est améliorée, jamais transcrite (ses sous-titres viennent du site)",
       "ui.go": "Améliorer l'audio",
@@ -733,9 +709,6 @@ function stageText(st) {
 
 /* Message d'erreur du serveur : `code`/`params` traduisibles, `raw` en repli. */
 function errorText(code, params, raw) {
-  // Version installée : le texte du serveur renvoie vers ./run.sh, que personne
-  // ne peut lancer depuis cette fenêtre (l'API garde son message d'origine).
-  if (desktopMode && code === "transcribe_unavailable") return t("ui.transcribe_unavailable_desktop");
   if (code) {
     const tpl = lookup(code);
     if (tpl != null) return fill(tpl, params);
@@ -1395,37 +1368,6 @@ go.addEventListener("click", async () => {
 $("cancelBtn").addEventListener("click", cancelJob);
 $("deleteBtn").addEventListener("click", deleteJob);
 
-// ------------------------------------------------------------------ quitter
-// Présent uniquement dans la version installée (status.desktop). Quand la page
-// a été ouverte dans le navigateur, le lanceur ne peut pas suivre l'onglet :
-// ce bouton est le seul moyen, pour l'utilisateur, d'arrêter l'application.
-async function quitApp() {
-  // `pollTimer` est le signal que la page suit déjà : il est armé à l'envoi et
-  // `stopPolling()` l'enlève dès que le job est terminé, annulé ou en erreur.
-  // `jobId`, lui, reste armé après un job fini — il ne dirait pas "en cours".
-  if (pollTimer !== null && !confirm(t("ui.quit_confirm"))) return;
-  $("quitBtn").disabled = true;
-  try {
-    const r = await fetch("/api/shutdown", { method: "POST" });
-    if (!r.ok) {
-      $("quitBtn").disabled = false;
-      showError("ui.quit_failed");
-      return;
-    }
-  } catch (e) {
-    $("quitBtn").disabled = false;
-    showError(null, null, e.message);
-    return;
-  }
-  // Le serveur s'arrête juste après avoir répondu : la page reste, l'application
-  // est terminée (le lanceur rend la main et libère le verrou).
-  clearInterval(pollTimer);
-  $("quitBtn").classList.add("hidden");
-  T($("quitNote"), "ui.quit_done");
-}
-
-$("quitBtn").addEventListener("click", quitApp);
-
 $("again").addEventListener("click", () => {
   currentFile = null;
   currentFiles = [];
@@ -1461,9 +1403,6 @@ $("again").addEventListener("click", () => {
 // Deux raisons peuvent la désactiver, et elles ne doivent pas se marcher
 // dessus : NeMo absent (`asrMissing`) et sous-titres du site cochés.
 let asrMissing = false;
-// Desktop build (status.desktop): there is no shell script to run, so the
-// wording must not send the user back to a terminal.
-let desktopMode = false;
 
 function subtitlesOn() {
   return mode === "ytdlp" && $("subtitles").checked;
@@ -1473,16 +1412,13 @@ function paintTranscribeRow() {
   const ytd = mode === "ytdlp", subs = subtitlesOn();
   // `POST /api/download` n'a pas de paramètre `transcribe`: dans l'onglet
   // YouTube la transcription Parakeet est impossible, sous-titres cochés ou non.
-  // Un build desktop n'embarque pas NeMo: le libellé dit alors que la
-  // transcription n'est pas incluse; le mode CLI renvoie à `./run.sh --asr`.
   const off = asrMissing || ytd;
   $("transcribe").disabled = off;
   if (off) $("transcribe").checked = false;
   $("transcribeRow").classList.toggle("off", off);
   $("transcribeDesc").textContent = t(subs ? "ui.opt_transcribe_subs"
     : ytd ? "ui.opt_transcribe_ytdlp"
-    : asrMissing ? (desktopMode ? "ui.opt_transcribe_missing_desktop" : "ui.opt_transcribe_missing")
-    : "ui.opt_transcribe_ok");
+    : asrMissing ? "ui.opt_transcribe_missing" : "ui.opt_transcribe_ok");
 }
 
 function setTranscribeEnabled(on) {
@@ -1503,13 +1439,11 @@ function paintBadge() {
   // .available : false = nemo_toolkit[asr] absent (run.sh n'installe que les
   // 4 paquets de base). La case est alors désactivée avec la commande à lancer.
   asrMissing = st.available === false;
-  desktopMode = s.desktop === true;
-  $("quitRow").classList.toggle("hidden", !desktopMode);
   let asr = "";
   if (st.status === "ready") asr = t("ui.asr_ready");
   else if (st.status === "loading") asr = t("ui.asr_loading");
   else if (st.status === "error") asr = t("ui.asr_error");
-  else if (asrMissing) asr = t(desktopMode ? "ui.asr_missing_desktop" : "ui.asr_missing");
+  else if (asrMissing) asr = t("ui.asr_missing");
   if (s.status === "ready") {
     b.classList.add("ready");
     b.textContent = t("ui.badge_ready",

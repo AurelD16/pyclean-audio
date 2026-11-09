@@ -1,8 +1,6 @@
 import asyncio
 import contextlib
 import ipaddress
-import logging
-import os
 import queue
 import re
 import shutil
@@ -13,17 +11,15 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import downloader
 from .cancel import JobCancelled, raise_if_cancelled
 from .config import (
-    BASE,
-    DESKTOP,
     JOB_MAX,
     JOB_TTL,
     MAX_FOLDER_FILES,
@@ -32,16 +28,14 @@ from .config import (
     PRELOAD_ASR,
     PURGE_INTERVAL,
     QUEUE_MAX,
-    data_dir,
 )
 from .enhancer import get_enhancer
 from .messages import MediaError, error_text, jsonable, stage_text
 from .processor import ALLOWED_EXT, process_file
 from .transcriber import get_transcriber, is_available
 
-# The results directory: BASE/data/jobs, or PYCLEAN_DATA_DIR (the desktop
-# launcher points it at the per-user state dir — see app/config.py:data_dir).
-DATA = data_dir()
+BASE = Path(__file__).resolve().parent.parent
+DATA = BASE / "data" / "jobs"
 DATA.mkdir(parents=True, exist_ok=True)
 
 JOBS = {}
@@ -635,82 +629,7 @@ def status():
         "jobs": len(JOBS),
     }
     s["queue"] = {"waiting": QUEUE.qsize(), "max": QUEUE_MAX}
-    s["desktop"] = DESKTOP  # packaged run: the page drops its ./run.sh wording
     return s
-
-
-# How long the 200 of /api/shutdown travels before the process leaves: long
-# enough for the page to receive it, short enough not to look like a hang.
-SHUTDOWN_GRACE = 0.6
-
-
-def _stop_soon() -> None:
-    """Exit this process once the 200 of `POST /api/shutdown` has been written.
-
-    uvicorn's `Server.should_exit` is not reachable from an ASGI app — finding
-    the live instance would mean a `gc.get_objects()` walk, hundreds of
-    milliseconds with a model resident, and it would buy nothing but a prettier
-    shutdown log — and its signal route is not portable either (`os.kill(pid,
-    SIGTERM)` is a hard TerminateProcess on Windows). So the exit is ours:
-    `os._exit` from a daemon thread. Nothing needs a graceful path: the lifespan
-    only cancels the purge task, and every job folder is already on disk under
-    the state directory. The launcher is waiting on the process — it reaps it,
-    releases the instance lock and quits.
-    """
-    threading.Timer(SHUTDOWN_GRACE, os._exit, args=(0,)).start()
-
-
-# Origins that are the app itself. It only ever listens on the loopback, so a
-# request from any of them (or from no browser at all) is local by construction.
-LOCAL_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-
-
-def _request_origin(request: Request) -> str:
-    """""the page", "another site", or "" (no browser on the other end)."""
-    if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
-        return "cross-site"
-    origin = request.headers.get("origin", "").strip()
-    if not origin:
-        return ""  # curl, the CLI, a scripted client
-    host = urlsplit(origin).hostname or ""
-    return "local" if host in LOCAL_ORIGIN_HOSTS else "cross-site"
-
-
-@app.post("/api/shutdown")
-def shutdown(request: Request):
-    """Stops the whole application — **desktop build only** (the page's "Quit").
-
-    404 unless `PYCLEAN_DESKTOP` is set, so `./run.sh`, the CLI and the bare API
-    keep the contract they had: only the packaged app can be stopped this way,
-    and it is what makes the browser mode usable (a browser tab cannot be
-    followed, so the page is the only place a user can stop the app).
-
-    POST only, and **not from another site**: `127.0.0.1` is a
-    potentially-trustworthy origin, so a hostile page can reach it with a
-    `no-cors` POST and no preflight — a blind spray of 8787..8806 would
-    otherwise be enough to stop the app. `Sec-Fetch-Site: cross-site` or an
-    `Origin` that is not our own loopback origin is refused; **a missing header
-    stays allowed**, so the page, curl and a scripted client keep working. (The
-    rest of the API — `POST /api/enhance`, `DELETE /api/jobs/{id}` — is open in
-    the same way; this is where the habit starts.)
-
-    Nothing from the request reaches the log: the origin is one of three values
-    computed here.
-    """
-    if not DESKTOP:
-        raise HTTPException(404, "shutdown is only available in the desktop app")
-    origin = _request_origin(request)
-    if origin == "cross-site":
-        logging.getLogger("pyclean").warning(
-            "shutdown refused: cross-site request, pid %d", os.getpid(),
-        )
-        raise HTTPException(403, "shutdown refused: cross-site request")
-    logging.getLogger("pyclean").warning(
-        "shutdown requested by %s, pid %d",
-        "the page (Quit button)" if origin == "local" else "a local client", os.getpid(),
-    )
-    _stop_soon()
-    return {"stopping": True}
 
 
 def _check_input_sr(input_sr):
